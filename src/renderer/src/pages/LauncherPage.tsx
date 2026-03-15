@@ -119,7 +119,6 @@ const ProfileCard = ({ profile, versionName, onEdit, onPlay, onDelete, onOpenFol
 export function LauncherPage() {
     const [
         allProfiles,
-        selectedProfile,
         setSelectedProfile,
         setAllProfiles,
         saveData,
@@ -129,7 +128,6 @@ export function LauncherPage() {
         versionManager
     ] = useAppStore(useShallow(state => [
         state.allProfiles,
-        state.selectedProfile,
         state.setSelectedProfile,
         state.setAllProfiles,
         state.saveData,
@@ -139,12 +137,19 @@ export function LauncherPage() {
         state.versionManager
     ]));
 
+    const [isFetching, setIsFetching] = useState(true);
+
     const getVersionName = (profile: Profile): string => {
+        if (isFetching)
+            return "Fetching...";
+
         if (profile.version_uuid) {
-            const installed = versionManager.getInstalledVersionByUUID(profile.version_uuid);
-            if (installed) return installed.name;
+            const version = versionManager.getAnyVersionByUUID(profile.version_uuid);
+            if (!version) 
+                return "Unknown version";
+            return version.getName();
         }
-        return profile.minecraft_version ?? "No version";
+        return "No version";
     };
 
     const navigate = useNavigate();
@@ -203,6 +208,21 @@ export function LauncherPage() {
             ], { duration: 200, easing: "cubic-bezier(0.2, 0, 0, 1)" });
         }
     }, [allProfiles]);
+
+    useEffect(() => {
+        const fetchData = async () => {
+            setIsFetching(true);
+            try {
+                await versionManager.database.update();
+            } catch (e) {
+                console.error("Failed to update version database:", e);
+                setError("Failed to fetch version data! Check your internet connection and try again.");
+            } finally {
+                setIsFetching(false);
+            }
+        };
+        fetchData();
+    }, []);
 
     const deleteProfile = (index: number) => {
         snapshotPositions();
@@ -298,7 +318,6 @@ export function LauncherPage() {
                             uuid: crypto.randomUUID(),
                             name: instanceResult.name,
                             is_modded: isModded,
-                            minecraft_version: versionResult.minecraft_version,
                             version_uuid: versionResult.version_uuid,
                             mods: [],
                             runtime: "Vanilla",

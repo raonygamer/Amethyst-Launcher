@@ -5,9 +5,10 @@ import { TextInput } from "@renderer/components/TextInput";
 import { SemVersion } from "@renderer/scripts/classes/SemVersion";
 import { PathUtils } from "@renderer/scripts/PathUtils";
 import { MinecraftVersionData, MinecraftVersionType } from "@renderer/scripts/VersionDatabase";
+import { InstalledVersionListModel, InstalledVersionModel } from "@renderer/scripts/VersionManager";
 import { useAppStore } from "@renderer/states/AppStore";
 import { PopupUseArguments } from "@renderer/states/PopupStore";
-import { useEffect, useMemo, useReducer, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 
 const { ipcRenderer, shell } = window.require("electron") as typeof import("electron");
 const fs = window.require("fs") as typeof import("fs");
@@ -34,32 +35,34 @@ export function VersionPickerPopup({ submit: rawSubmit }: PopupUseArguments<Vers
 
     const [remoteVersions, setRemoteVersions] = useState<MinecraftVersionData[]>([]);
     const [fetching, setFetching] = useState(true);
-    const [updateCount, forceUpdate] = useReducer(x => x + 1, 0);
     const [upload, setUpload] = useState<UploadState | null>(null);
     const [hiddenUuids, setHiddenUuids] = useState<Set<string>>(new Set());
+    const [installedVersions, setInstalledVersions] = useState<InstalledVersionModel[]>([]);
 
     const versionManager = useAppStore(state => state.versionManager);
 
+    const versionsListUpdated = useCallback(() => {
+        setInstalledVersions(versionManager.getInstalledVersions().filter(v => !hiddenUuids.has(v.uuid)));
+        setRemoteVersions(versionManager.database.getAllVersions());
+        console.log("Versions list updated");
+    }, [hiddenUuids]);
+
     useEffect(() => {
+        const unsubInstall = versionManager.subscribe("version_installed", versionsListUpdated);
+        const unsubUninstall = versionManager.subscribe("version_uninstalled", versionsListUpdated);
+        const unsubDatabase = versionManager.database.subscribe("database_updated", versionsListUpdated);
         const fetchVersions = async () => {
-            try {
-                const versions = await versionManager.database.update();
-                if (versions instanceof Error) throw versions;
-                setRemoteVersions([...versions]);
-            } catch (e) {
-                console.error("Failed to fetch versions:", e);
-            } finally {
-                setFetching(false);
-            }
+            await versionManager.database.update();
+            setFetching(false);
         };
         fetchVersions();
 
-        const unsubInstall = versionManager.subscribe("version_installed", () => forceUpdate());
-        const unsubUninstall = versionManager.subscribe("version_uninstalled", () => forceUpdate());
-        return () => { unsubInstall(); unsubUninstall(); };
+        return () => { 
+            unsubInstall(); 
+            unsubUninstall();
+            unsubDatabase();
+        };
     }, []);
-
-    const installedVersions = useMemo(() => versionManager.getInstalledVersions().filter(v => !hiddenUuids.has(v.uuid)), [versionManager, remoteVersions, hiddenUuids, updateCount]);
 
     const sortNewestFirst = (a: MinecraftVersionData, b: MinecraftVersionData) => {
         const av = a.version, bv = b.version;
@@ -93,6 +96,7 @@ export function VersionPickerPopup({ submit: rawSubmit }: PopupUseArguments<Vers
             }, 150);
             return () => clearTimeout(timer);
         }
+        return () => { };
     }, [showPreviews]);
 
     const selectInstalled = (uuid: string) => {
@@ -107,7 +111,7 @@ export function VersionPickerPopup({ submit: rawSubmit }: PopupUseArguments<Vers
     const selectRemote = (version: MinecraftVersionData) => {
         submit({
             minecraft_version: version.version.toString(),
-            version_uuid: null,
+            version_uuid: version.uuid,
             display_name: version.version.toString(),
         });
     };

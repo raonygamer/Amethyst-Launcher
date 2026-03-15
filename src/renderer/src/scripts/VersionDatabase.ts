@@ -1,6 +1,7 @@
 import { useAppStore } from "@renderer/states/AppStore";
 import { SemVersion } from "@renderer/scripts/classes/SemVersion";
 import { IJSONModel } from "@renderer/scripts/contracts/IJSONModel";
+import { EventEmitter } from "./eventing/EventEmitter";
 
 const fs = window.require("fs") as typeof import("fs");
 const { createHash } = window.require("crypto") as typeof import("crypto");
@@ -198,11 +199,16 @@ interface HistoricalVersionsContract {
     }[];
 }
 
-export class VersionDatabase {
+type VersionDatabaseEventCallbacks = {
+    database_updated: () => void;
+};
+
+export class VersionDatabase extends EventEmitter<VersionDatabaseEventCallbacks> {
     private static readonly DATABASE_URL: string = "https://raw.githubusercontent.com/LukasPAH/minecraft-windows-gdk-version-db/refs/heads/main/historical_versions.json";
     private Versions: VersionCacheModel;
 
     constructor() {
+        super();
         this.Versions = new VersionCacheModel([], new Date(0), -1);
     }
 
@@ -272,6 +278,7 @@ export class VersionDatabase {
                 if (cacheData.fileVersion < data.file_version) {
                     console.log(`Remote database version (${data.file_version}) is newer than cache version (${cacheData.fileVersion}), updating cache...`);
                     this.Versions = await fetchRemoteDatabase();
+                    this.notify("database_updated");
                     return this.Versions.versions;
                 }
             }
@@ -280,6 +287,7 @@ export class VersionDatabase {
                 if (cacheData) {
                     console.log("Using cached version database due to fetch failure.");
                     this.Versions = cacheData;
+                    this.notify("database_updated");
                     return cacheData.versions;
                 }
                 return new Error(`Failed to fetch version database and no valid cache available. ${e}`);
@@ -289,6 +297,7 @@ export class VersionDatabase {
         if (cacheData) {
             console.log("Using cached version database.");
             this.Versions = cacheData;
+            this.notify("database_updated");
             return cacheData.versions;
         }
 
@@ -299,6 +308,7 @@ export class VersionDatabase {
             // so we will attempt to fetch the remote database, if that fails we will throw an error since we have no valid cache to fall back to
             this.Versions = await fetchRemoteDatabase();
             fs.writeFileSync(cachePath, this.Versions.toJSON(), "utf-8");
+            this.notify("database_updated");
             return this.Versions.versions;
         }
         catch (e) {
@@ -317,5 +327,11 @@ export class VersionDatabase {
 
     getAllVersions(): MinecraftVersionData[] {
         return this.Versions.versions;
+    }
+
+    getLatestVersion(type: MinecraftVersionType): MinecraftVersionData | null {
+        const filteredVersions = this.Versions.versions.filter(version => version.type === type);
+        if (filteredVersions.length === 0) return null;
+        return filteredVersions[0];
     }
 }

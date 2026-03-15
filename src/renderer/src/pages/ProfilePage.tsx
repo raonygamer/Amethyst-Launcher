@@ -31,6 +31,7 @@ const ProfileButton = ({ profile, index }: { profile: Profile; index: number }) 
     const navigate = useNavigate();
     const setSelectedProfile = useAppStore(state => state.setSelectedProfile);
     const allValidMods = useAppStore(state => state.allValidMods);
+    const versionManager = useAppStore(state => state.versionManager);
 
     const openProfile = (index: number) => {
         setSelectedProfile(index);
@@ -45,7 +46,7 @@ const ProfileButton = ({ profile, index }: { profile: Profile; index: number }) 
             <div className="profile-card-inner">
                 <p className="minecraft-seven profile-card-title">{profile.name}</p>
                 <p className="minecraft-seven profile-card-subtitle">
-                    {profile.minecraft_version} ({profile.runtime})
+                    {profile.version_uuid && versionManager.getAnyVersionByUUID(profile.version_uuid)?.version.toString() || "Unknown Version"} ({profile.runtime})
                 </p>
                 {unknownMods.length > 0 && (
                     <p className="minecraft-seven profile-card-warning">
@@ -80,9 +81,10 @@ export function ProfilePage() {
                             const defaultProfile: Profile = {
                                 uuid: crypto.randomUUID(),
                                 name: "New Profile",
-                                minecraft_version: versionDatabase.getAllVersions().find(v => v.type === "release")?.version.toString(),
+                                version_uuid: versionDatabase.getLatestVersion("release")?.uuid,
                                 mods: [],
                                 runtime: "Vanilla",
+                                is_modded: false,
                             };
 
                             const newProfiles = [...allProfiles, defaultProfile];

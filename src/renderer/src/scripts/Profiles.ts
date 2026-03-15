@@ -13,8 +13,6 @@ export interface Profile {
     is_modded: boolean;
     runtime: string;
     mods: string[];
-    minecraft_version: string | null;
-    /** UUID of the installed version, used for imported versions that may not exist in the remote database. */
     version_uuid?: string | null;
 }
 

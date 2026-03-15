@@ -2,7 +2,6 @@ import { SemVersion } from "@renderer/scripts/classes/SemVersion";
 import { MinecraftVersionData, MinecraftVersionType, VersionDatabase } from "@renderer/scripts/VersionDatabase";
 import { useAppStore } from "@renderer/states/AppStore";
 import { PathUtils } from "./PathUtils";
-import { XVDTool } from "./backend/tools/XVDTool";
 import { CIK_KEYS } from "./backend/Decryption";
 import { Downloader } from "./backend/Downloader";
 import { IJSONModel } from "./contracts/IJSONModel";
@@ -10,6 +9,7 @@ import { FileLocker } from "./FileLocker";
 import { FULL_PROGRESS_RESET_OPTIONS, ProgressBar } from "@renderer/states/ProgressBarStore";
 import { LauncherTools } from "./backend/tools/LauncherTools";
 import { useDownloadStore, addPendingDownload, removePendingDownload } from "@renderer/states/DownloadStore";
+import { EventEmitter } from "./eventing/EventEmitter";
 
 const fs = window.require("fs") as typeof import("fs");
 const path = window.require("path") as typeof import("path");
@@ -181,38 +181,11 @@ export class InstalledVersionListModel implements IJSONModel {
 type VersionManagerEventCallbacks = {
     version_installed: (version: InstalledVersionModel) => void;
     version_uninstalled: (uuid: string) => void;
-    // adiciona mais eventos aqui com seus próprios tipos
 }
 
-type VersionManagerEvent = keyof VersionManagerEventCallbacks;
-
-export class VersionManager {
+export class VersionManager extends EventEmitter<VersionManagerEventCallbacks> {
     public readonly database: VersionDatabase = new VersionDatabase();
     private installedVersions: InstalledVersionListModel = new InstalledVersionListModel([]);
-    private subscribers: { 
-        [E in VersionManagerEvent]?: VersionManagerEventCallbacks[E][] 
-    } = {};
-
-    constructor() {}
-
-    subscribe<E extends VersionManagerEvent>(event: E, callback: VersionManagerEventCallbacks[E]): () => void {
-        if (!this.subscribers[event]) 
-            this.subscribers[event] = [];
-        this.subscribers[event]!.push(callback);
-        return () => {
-            this.unsubscribe(event, callback);
-        };
-    }
-
-    unsubscribe<E extends VersionManagerEvent>(event: E, callback: VersionManagerEventCallbacks[E]) {
-        if (!this.subscribers[event])
-            return;
-        this.subscribers[event] = this.subscribers[event]!.filter(cb => cb !== callback) as any;
-    }
-
-    private notify<E extends VersionManagerEvent>(event: E, ...args: Parameters<VersionManagerEventCallbacks[E]>) {
-        this.subscribers[event]?.forEach(cb => (cb as (...a: any[]) => void)(...args));
-    }
 
     isLocked(versionFileName: string): boolean {
         const paths = getPaths();
@@ -401,15 +374,13 @@ export class VersionManager {
         const extractedVersionPath = path.join(versionsPath, versionFileName);
 
         // Start the extraction process, this involves decrypting the MSIXVC file and then extracting it to the target folder
-        return await this.extractVersionByPath(versionFilePath, extractedVersionPath, version.version, version.type);
+        return await this.extractVersionByPath(versionFilePath, extractedVersionPath, version.version);
     }
 
     async extractVersionByPath(
         versionFilePath: string, 
         targetOutputPath: string, 
-        version: SemVersion, 
-        type: MinecraftVersionType,
-        shouldAskUpdate: boolean = true
+        version: SemVersion
     ): Promise<boolean> {
         const versionFileName = path.basename(versionFilePath);
 
@@ -483,6 +454,20 @@ export class VersionManager {
         return installedVersion;
     }
 
+    getAnyVersionByUUID(uuid: string): MinecraftGeneralVersionInfo | null {
+        // First we will check if the version is in the installed versions list, if so we return it
+        const installedVersion = this.getInstalledVersionByUUID(uuid);
+        if (installedVersion)
+            return installedVersion;
+
+        // If not, we will check the version database, if it's there we return it, otherwise we return null
+        const dbVersion = this.database.getVersionByUUID(uuid);
+        if (dbVersion)
+            return dbVersion;
+
+        return null;
+    }
+
     async installVersion(version: VersionInstallationData): Promise<boolean> {
         // Before we start installing, we want to check if the version is already installed
         if (this.getInstalledVersionByUUID(version.uuid)) {
@@ -547,7 +532,7 @@ export class VersionManager {
 
             // After copying the file, we will attempt to decrypt and/or extract it using the same process as for downloaded versions
             try {
-                await this.extractVersionByPath(copyTargetPath, extractedVersionPath, version.version, version.type);
+                await this.extractVersionByPath(copyTargetPath, extractedVersionPath, version.version);
             } finally {
                 await fs.promises.unlink(copyTargetPath);
             }

@@ -8,7 +8,7 @@ import rehypeRaw from "rehype-raw";
 import remarkGfm from "remark-gfm";
 
 import { MainPanelSection, PanelIndent } from "@renderer/components/MainPanel";
-import { MinecraftButton } from "@renderer/components/MinecraftButton";
+import { MinecraftButton, RED_MINECRAFT_BUTTON } from "@renderer/components/MinecraftButton";
 import { MinecraftButtonStyle } from "@renderer/components/MinecraftButtonStyle";
 import { MinecraftRadialButtonPanel } from "@renderer/components/MinecraftRadialButtonPanel";
 import { PopupPanel, usePopupClose } from "@renderer/components/PopupPanel";
@@ -449,7 +449,6 @@ export function ModDownloads({ mod, onClose }: { mod: ModDiscoveryData; onClose?
                         uuid: crypto.randomUUID(),
                         name: instanceResult.name,
                         is_modded: isModded,
-                        minecraft_version: versionResult.minecraft_version,
                         version_uuid: versionResult.version_uuid,
                         mods: [],
                         runtime: "Vanilla",
@@ -554,7 +553,7 @@ export function ModDownloads({ mod, onClose }: { mod: ModDiscoveryData; onClose?
                                 <MinecraftButton
                                     text="Cancel"
                                     onClick={() => setConfirmingMod(null)}
-                                    style={MinecraftButtonStyle.Warn}
+                                    colorPallete={RED_MINECRAFT_BUTTON}
                                 />
                                 <MinecraftButton
                                     text="Continue"

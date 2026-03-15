@@ -1,7 +1,8 @@
 import { useAppStore } from "@renderer/states/AppStore";
-import { SemVersion } from "@renderer/scripts/classes/SemVersion";
 import { ProgressBar } from "@renderer/states/ProgressBarStore";
 import { Profile } from "./Profiles";
+import { InstalledVersionModel } from "./VersionManager";
+import { MinecraftVersionData } from "./VersionDatabase";
 
 /**
  * Launches a profile by its UUID. Can be called from anywhere (protocol handler, UI, etc.)
@@ -31,57 +32,51 @@ export async function launchProfile(profile: Profile): Promise<void> {
         );
     }
 
-    if (!profile.minecraft_version && !profile.version_uuid) {
+    if (!profile.version_uuid) {
         throw new Error("No Minecraft version selected for this profile! Edit the profile to set one.");
     }
 
-    // If the profile has a version_uuid, use it directly to find the installed version
-    if (profile.version_uuid) {
-        const installedVersion = versionManager.getInstalledVersionByUUID(profile.version_uuid);
-        if (!installedVersion) {
-            throw new Error(`Installed version with UUID ${profile.version_uuid} not found! It may have been deleted.`);
-        }
+    await versionManager.database.update();
+    const anyVersion = versionManager.getAnyVersionByUUID(profile.version_uuid);
+    if (!anyVersion) {
+        throw new Error("Selected Minecraft version for this profile is not in the version database nor installed! Edit the profile to select a different version.");
+    }
+
+    if (anyVersion instanceof InstalledVersionModel) {
+        await ProgressBar.useAsync(async ({ setStatus, setMessage, setProgress }) => {
+            setStatus("launching");
+            setProgress(0.5);
+            setMessage(`Preparing ${anyVersion.getName()}...`);
+
+            await platform.runProfile(profile, anyVersion, setMessage);
+        }, true);
+        return;
+    } 
+    else if (anyVersion instanceof MinecraftVersionData) {
+        await ProgressBar.useAsync(async ({ setStatus, setMessage, setProgress }) => {
+            setStatus("other");
+            setProgress(0);
+            setMessage(`Checking version ${anyVersion.version.toString()}...`);
+
+            const isVersionInstalled = versionManager.getInstalledVersionByUUID(anyVersion.uuid) !== null;
+
+            if (!isVersionInstalled) {
+                setMessage(`Downloading ${anyVersion.version.toString()}...`);
+                await versionManager.downloadExtractAndInstallVersion(anyVersion.uuid);
+            }
+        }, true);
 
         await ProgressBar.useAsync(async ({ setStatus, setMessage, setProgress }) => {
             setStatus("launching");
             setProgress(0.5);
-            setMessage(`Preparing ${installedVersion.name}...`);
+            setMessage(`Preparing ${anyVersion.version.toString()}...`);
+
+            const installedVersion = versionManager.getInstalledVersionByUUID(anyVersion.uuid);
+            if (!installedVersion) {
+                throw new Error("Failed to find the installed version after downloading and extracting it.");
+            }
 
             await platform.runProfile(profile, installedVersion, setMessage);
         }, true);
-        return;
     }
-
-    const semVersion = SemVersion.fromString(profile.minecraft_version!);
-    await versionManager.database.update();
-    const minecraftVersion = versionManager.database.getVersionBySemVersion(semVersion);
-    if (!minecraftVersion) {
-        throw new Error(`Minecraft version ${semVersion.toString()} not found in version database!`);
-    }
-
-    await ProgressBar.useAsync(async ({ setStatus, setMessage, setProgress }) => {
-        setStatus("other");
-        setProgress(0);
-        setMessage(`Checking version ${semVersion.toString()}...`);
-
-        const isVersionInstalled = versionManager.getInstalledVersionByUUID(minecraftVersion.uuid) !== null;
-
-        if (!isVersionInstalled) {
-            setMessage(`Downloading ${semVersion.toString()}...`);
-            await versionManager.downloadExtractAndInstallVersion(minecraftVersion.uuid);
-        }
-    }, true);
-
-    await ProgressBar.useAsync(async ({ setStatus, setMessage, setProgress }) => {
-        setStatus("launching");
-        setProgress(0.5);
-        setMessage(`Preparing ${semVersion.toString()}...`);
-
-        const installedVersion = versionManager.getInstalledVersionByUUID(minecraftVersion.uuid);
-        if (!installedVersion) {
-            throw new Error("Failed to find the installed version after downloading and extracting it.");
-        }
-
-        await platform.runProfile(profile, installedVersion, setMessage);
-    }, true);
 }

@@ -99,9 +99,14 @@ export function ProfileEditor() {
     const [profileName, setProfileName] = useState("");
     const [profileActiveMods, setProfileActiveMods] = useState<string[]>([]);
     const [profileRuntime, setProfileRuntime] = useState<string>("");
-    const [profileMinecraftVersion, setProfileMinecraftVersion] = useState<string>("");
-    const [profileVersionUuid, setProfileVersionUuid] = useState<string | null>(null);
+
+    // String object instead of primitive so React detects reference changes
+    // even when the UUID value hasn't changed (e.g. when the same version is selected again in the version picker)
+    const [profileVersionUuid, setProfileVersionUuid] = useState<String | null>(null);
+
     const [modSearch, setModSearch] = useState("");
+    const [versionDisplayName, setVersionDisplayName] = useState("Select version...");
+    const [isFetching, setIsFetching] = useState(true);
 
     const [showMenu, setShowMenu] = useState(false);
     const dotsRef = useRef<HTMLDivElement>(null);
@@ -140,7 +145,6 @@ export function ProfileEditor() {
         setProfileName(profile?.name ?? "New Profile");
         setProfileRuntime(profile?.runtime ?? "Vanilla");
         setProfileActiveMods(profile?.mods ?? []);
-        setProfileMinecraftVersion(profile?.minecraft_version ?? "1.21.0.3");
         setProfileVersionUuid(profile?.version_uuid ?? null);
         profileLoaded.current = true;
     }, [allProfiles, selectedProfile]);
@@ -153,10 +157,9 @@ export function ProfileEditor() {
         profile.name = profileName;
         profile.runtime = profileActiveMods.length > 0 ? profileRuntime : "Vanilla";
         profile.mods = profileActiveMods;
-        profile.minecraft_version = profileMinecraftVersion;
-        profile.version_uuid = profileVersionUuid;
+        profile.version_uuid = profileVersionUuid?.toString();
         saveData();
-    }, [profileName, profileRuntime, profileActiveMods, profileMinecraftVersion, profileVersionUuid]);
+    }, [profileName, profileRuntime, profileActiveMods, profileVersionUuid]);
 
     const getOrphanedMods = (modNames: string[], excludeProfileIndex: number) => {
         return modNames.filter(modName => {
@@ -291,19 +294,51 @@ export function ProfileEditor() {
             return <VersionPickerPopup {...props} />;
         });
         if (!result) return;
-        setProfileMinecraftVersion(result.minecraft_version);
-        setProfileVersionUuid(result.version_uuid);
+        setProfileVersionUuid(new String(result.version_uuid));
     };
 
-    const installedVersions = useMemo(() => versionManager.getInstalledVersions(), [versionManager]);
-
-    const versionDisplayName = useMemo(() => {
-        if (profileVersionUuid) {
-            const installed = installedVersions.find(v => v.uuid === profileVersionUuid);
-            return installed?.name ?? profileMinecraftVersion;
+    const versionsListUpdated = useCallback(() => {
+        if (!profileVersionUuid) {
+            setVersionDisplayName("Select version...");
+            return;
         }
-        return profileMinecraftVersion || "Select version...";
-    }, [profileVersionUuid, profileMinecraftVersion, installedVersions]);
+
+        const version = versionManager.getAnyVersionByUUID(profileVersionUuid.toString());
+        if (!version) {
+            setVersionDisplayName("Unknown version");
+            return;
+        }
+
+        setVersionDisplayName(version.getName());
+    }, [profileVersionUuid, isFetching]);
+
+    useEffect(() => {
+        versionsListUpdated();
+    }, [versionsListUpdated]);
+
+    useEffect(() => {
+        const fetchData = async () => {
+            try {
+                await versionManager.database.update();
+            } catch (e) {
+                console.error("Failed to update version database:", e);
+            } finally {
+                setIsFetching(false);
+            }
+        };
+        fetchData();
+    }, []);
+
+    useEffect(() => {
+        const unsubVersionInstalled = versionManager.subscribe("version_installed", versionsListUpdated);
+        const unsubVersionUninstalled = versionManager.subscribe("version_uninstalled", versionsListUpdated);
+        const unsubDatabaseUpdated = versionManager.database.subscribe("database_updated", versionsListUpdated);
+        return () => {
+            unsubVersionInstalled();
+            unsubVersionUninstalled();
+            unsubDatabaseUpdated();
+        };
+    }, []);
 
     const allModsList = useMemo(() => {
         return profileActiveMods.map(name => ({
