@@ -3,8 +3,13 @@ import { GithubRelease } from "../github/GithubRelease";
 import { GithubAsset } from "../github/GithubAsset";
 import { CheckAction, DefaultCheckOptions, ToolArtifact, ToolCheckResult, ToolInstalledContext } from "./ToolArtifact";
 import { LauncherTools } from "./LauncherTools";
+import { useAppStore } from "@renderer/states/AppStore";
+import { Downloader } from "../Downloader";
+import { Extractor } from "../Extractor";
+import { ProgressBar } from "@renderer/states/ProgressBarStore";
 
 const path = window.require("path") as typeof import("path");
+const fs = window.require("fs") as typeof import("fs");
 const child = window.require("child_process") as typeof import("child_process");
 const { shellEnv } = window.require("shell-env") as typeof import("shell-env");
 
@@ -139,6 +144,13 @@ export class UMULauncher extends ToolArtifact {
             "PROTONPATH": gdkProtonPath
         };
 
+        const combasePath = path.join(gdkProtonPath, "files", "lib", "wine", "x86_64-windows", "combase.dll");
+        if (!fs.existsSync(combasePath)) {
+            console.warn(`[${this.name}] Warning: 'combase.dll' not found at expected path '${combasePath}'. UMU Launcher may fail to run the game.`);
+        }
+        else {
+            fs.copyFileSync(combasePath, path.join(path.dirname(gamePath), "combase.dll"));
+        }
         const exec_proc = child.spawn(executable, [`${gamePath}`], {
             env: env,
             cwd: path.dirname(gamePath),
