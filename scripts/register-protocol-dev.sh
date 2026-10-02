@@ -27,4 +27,4 @@ xdg-mime default amethyst-launcher-dev.desktop x-scheme-handler/amethyst-launche
 update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
 
 echo "Registered amethyst-launcher:// → $ELECTRON_BIN $REPO_DIR"
-echo "Test with: xdg-open amethyst-launcher://startprofile/test"
+echo "Test with: xdg-open amethyst-launcher://launchprofile/test"

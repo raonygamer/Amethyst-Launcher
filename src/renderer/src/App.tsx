@@ -1,5 +1,5 @@
 import { useAppStore } from "@renderer/states/AppStore";
-import { Link, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { describeError, userMessage } from "@shared/diagnostics/Log";
 import { Popup } from "@renderer/states/PopupStore";
 import { createProfileFlow } from "@renderer/flows/CreateProfile";
@@ -16,16 +16,16 @@ import settingsIcon from "@renderer/assets/images/icons/settings-icon.png";
 import { DropWindow } from "@renderer/components/DropWindow";
 import { ErrorBanner } from "@renderer/components/ErrorBanner";
 import Title from "@renderer/components/Title";
+import { AccountButton } from "@renderer/components/AccountButton";
 
 import { LauncherPage } from "@renderer/pages/LauncherPage";
 import { SettingsPopup } from "@renderer/popups/SettingsPopup";
 import { UpdatePage } from "@renderer/pages/UpdatePage";
 import PopupRenderer from "./components/PopupRenderer";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import LoadingSpinnerRenderer from "./components/LoadingSpinnerRenderer";
 import ProgressBarRenderer from "./components/ProgressBarRenderer";
-import { removePendingDownload, useDownloadStore } from "@renderer/states/DownloadStore";
+import { DownloadManagerButton } from "@renderer/components/DownloadManagerButton";
 import { MOD_DISCOVERY_ENABLED } from "@renderer/scripts/FeatureFlags";
 
 const fs = window.require("fs") as typeof import("fs");
@@ -36,116 +36,8 @@ const ProfileEditor = lazy(() => import("@renderer/pages/ProfileEditor").then(m 
 const ProfilePage = lazy(() => import("@renderer/pages/ProfilePage").then(m => ({ default: m.ProfilePage })));
 const VersionPage = lazy(() => import("@renderer/pages/VersionPage").then(m => ({ default: m.VersionPage })));
 const LogsPage = lazy(() => import("@renderer/pages/LogsPage").then(m => ({ default: m.LogsPage })));
-
-function DownloadManagerButton() {
-    const downloads = useDownloadStore(state => state.downloads);
-    const panelOpen = useDownloadStore(state => state.panelOpen);
-    const setPanelOpen = useDownloadStore(state => state.setPanelOpen);
-    const removeDownload = useDownloadStore(state => state.removeDownload);
-
-    const btnRef = useRef<HTMLDivElement>(null);
-    const panelRef = useRef<HTMLDivElement>(null);
-    const [panelPos, setPanelPos] = useState({ bottom: 0, left: 0 });
-
-    const activeCount = downloads.filter(d => d.status === "downloading" || d.status === "extracting" || d.status === "queued").length;
-
-    useEffect(() => {
-        if (!panelOpen) return;
-        const handleClick = (e: MouseEvent) => {
-            if (
-                btnRef.current && !btnRef.current.contains(e.target as Node) &&
-                panelRef.current && !panelRef.current.contains(e.target as Node)
-            ) {
-                setPanelOpen(false);
-            }
-        };
-        document.addEventListener("mousedown", handleClick);
-        return () => document.removeEventListener("mousedown", handleClick);
-    }, [panelOpen, setPanelOpen]);
-
-    useEffect(() => {
-        if (!panelOpen || !btnRef.current) return;
-        const rect = btnRef.current.getBoundingClientRect();
-        setPanelPos({
-            bottom: window.innerHeight - rect.bottom,
-            left: rect.right + 10,
-        });
-    }, [panelOpen]);
-
-    // Cancelling has to clear the crash-recovery record too, or the next start resumes what
-    // the user just stopped.
-    const cancelDownload = (id: string) => {
-        const dl = downloads.find(d => d.id === id);
-        if (!dl) {
-            log("Downloads", `Dismissed download ${id}, which is no longer in the list`);
-        }
-        else if (dl.abortController) {
-            log("Downloads", `User cancelled "${dl.name}" (${id}) at ${Math.round(dl.progress * 100)}%, status ${dl.status}`);
-            dl.abortController.abort();
-        }
-        else {
-            log("Downloads", `Removed "${dl.name}" (${id}) from the list; status ${dl.status} carries nothing to abort`);
-        }
-        removePendingDownload(id);
-        removeDownload(id);
-    };
-
-    return (
-        <div className="download-manager-btn" ref={btnRef} onClick={() => setPanelOpen(!panelOpen)}>
-            <svg width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="#FFFFFF" strokeWidth="1.5" strokeLinecap="round">
-                <path d="M8 2v8M4.5 7.5L8 11l3.5-3.5M2 14h12" />
-            </svg>
-            {activeCount > 0 && <div className="download-manager-badge" />}
-
-            {panelOpen && createPortal(
-                <div
-                    className="download-manager-panel"
-                    ref={panelRef}
-                    style={{ bottom: panelPos.bottom, left: panelPos.left }}
-                    onClick={e => e.stopPropagation()}
-                >
-                    <p className="minecraft-seven download-manager-title">Downloads</p>
-                    <div className="download-manager-list scrollbar">
-                        {downloads.length === 0 && (
-                            <p className="minecraft-seven download-manager-empty">No downloads</p>
-                        )}
-                        {downloads.map(dl => (
-                            <div key={dl.id} className="download-manager-item">
-                                <div className="download-manager-item-info">
-                                    <p className="minecraft-seven download-manager-item-name">{dl.name}</p>
-                                    <p className="minecraft-seven download-manager-item-status">
-                                        {dl.status === "downloading" ? `${Math.round(dl.progress * 100)}%` : dl.status}
-                                    </p>
-                                </div>
-                                <div className="download-manager-progress-track">
-                                    <div
-                                        className={`download-manager-progress-fill ${dl.status === "error" ? "download-manager-progress-error" : ""}`}
-                                        style={{ width: `${Math.round(dl.progress * 100)}%` }}
-                                    />
-                                </div>
-                                {(dl.status === "downloading" || dl.status === "queued") && (
-                                    <div className="download-manager-item-cancel" onClick={() => cancelDownload(dl.id)}>
-                                        <svg width="10" height="10" viewBox="0 0 12 12">
-                                            <path d="M2 2L10 10M10 2L2 10" stroke="#9f9f9f" strokeWidth="2" strokeLinecap="round" />
-                                        </svg>
-                                    </div>
-                                )}
-                                {(dl.status === "done" || dl.status === "error") && (
-                                    <div className="download-manager-item-cancel" onClick={() => removeDownload(dl.id)}>
-                                        <svg width="10" height="10" viewBox="0 0 12 12">
-                                            <path d="M2 2L10 10M10 2L2 10" stroke="#9f9f9f" strokeWidth="2" strokeLinecap="round" />
-                                        </svg>
-                                    </div>
-                                )}
-                            </div>
-                        ))}
-                    </div>
-                </div>,
-                document.body
-            )}
-        </div>
-    );
-}
+const ConsolePage = lazy(() => import("@renderer/pages/ConsolePage").then(m => ({ default: m.ConsolePage })));
+const AccountPage = lazy(() => import("@renderer/pages/AccountPage").then(m => ({ default: m.AccountPage })));
 
 function AnimatedRoutes() {
     const location = useLocation();
@@ -170,6 +62,8 @@ function AnimatedRoutes() {
                     <Route path="/versions" element={<VersionPage />} />
                     {MOD_DISCOVERY_ENABLED && <Route path="/mod-discovery" element={<ModDiscovery />} />}
                     <Route path="/logs" element={<LogsPage />} />
+                    <Route path="/console" element={<ConsolePage />} />
+                    <Route path="/account" element={window.process.platform === "linux" ? <AccountPage /> : <Navigate to="/" replace />} />
                 </Routes>
             </Suspense>
         </div>
@@ -269,7 +163,7 @@ export default function App() {
 
                 <div className="contents_container app-contents">
                     <div className="navbar_container app-navbar-container">
-                        <div className="app-navbar">
+                        <div className={`app-navbar${window.process.platform === "linux" ? " app-navbar--linux" : ""}`}>
                             <div className="app-nav-links">
                                 <Link to="/" draggable={false}>
                                     <div
@@ -308,6 +202,22 @@ export default function App() {
                                     </svg>
                                 </div>
                             </div>
+
+                            <AccountButton />
+
+                            <Link
+                                to="/console"
+                                draggable={false}
+                                title="Live console"
+                                aria-label="Live console"
+                                aria-current={location.pathname === "/console" ? "page" : undefined}
+                                className={`app-logs-button${location.pathname === "/console" ? " app-logs-button--active" : ""}`}
+                            >
+                                <svg width="22" height="22" viewBox="0 0 20 20" fill="none" stroke="var(--color-text)" strokeWidth="1.5" aria-hidden="true">
+                                    <rect x="2" y="3" width="16" height="14" />
+                                    <path d="m5 7 3 3-3 3m5 0h5" strokeLinecap="square" strokeLinejoin="miter" />
+                                </svg>
+                            </Link>
 
                             <Link to="/logs" draggable={false}>
                                 <div className={`app-logs-button${location.pathname === "/logs" ? " app-logs-button--active" : ""}`}>

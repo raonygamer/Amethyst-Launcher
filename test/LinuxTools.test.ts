@@ -1,0 +1,217 @@
+import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import net from "node:net";
+import { describe, it } from "node:test";
+import { packageInstallCommand, selectPackageManager, shellQuote } from "../src/shared/linux/LinuxDependencies.ts";
+import type { ProcessResult } from "../src/shared/diagnostics/ProcessRunner.ts";
+
+(globalThis as unknown as { require: NodeRequire }).require = createRequire(import.meta.url);
+const { checked, buildSource, sourceRevision, verifySource, installDependencies, findExecutable } = await import("../src/shared/linux/LinuxBuild.ts");
+const { xodusEnvironment, xodusUnit, xodusAutostartScript, setupXodusService, assertXodusReady } = await import("../src/shared/linux/XodusService.ts");
+
+function result(stdout = "", code = 0): ProcessResult {
+    return { command: "test", args: [], loggableArgs: [], code, stdout, stderr: "", output: stdout, durationMs: 0, timedOut: false };
+}
+
+describe("Linux dependency planning", () => {
+    it("prefers the native manager and recognises derivative distros", () => {
+        assert.equal(selectPackageManager('ID=ubuntu\nID_LIKE="debian"', ["dnf", "apt-get"]), "apt-get");
+        assert.equal(selectPackageManager('ID=custom\nID_LIKE="arch"', ["pacman", "apt-get"]), "pacman");
+        assert.equal(selectPackageManager("ID=fedora", ["dnf", "pacman"]), "dnf");
+        assert.equal(selectPackageManager("ID=nixos", []), null);
+        assert.equal(selectPackageManager("ID=custom", ["dnf", "pacman"]), null);
+    });
+
+    it("deduplicates packages and does not refresh or upgrade Arch during install", () => {
+        assert.deepEqual(packageInstallCommand("pacman", ["wayland", "wayland"]), {
+            command: "pacman", args: ["-S", "--needed", "--noconfirm", "wayland"],
+        });
+        assert.deepEqual(packageInstallCommand("apt-get", ["libx11-dev"]), {
+            command: "apt-get", args: ["install", "-y", "libx11-dev"],
+        });
+    });
+
+    it("quotes shell metacharacters and apostrophes as literal arguments", () => {
+        assert.equal(shellQuote("/tmp/a b;$(echo bad)"), "'/tmp/a b;$(echo bad)'");
+        assert.equal(shellQuote("a'b"), `'a'"'"'b'`);
+    });
+
+    it("honours a cancelled administrator prompt without trying another prompt", { skip: process.platform !== "linux" || process.getuid?.() === 0 || !findExecutable("pkexec") || !findExecutable("pacman") }, async () => {
+        const calls: string[] = [];
+        await assert.rejects(installDependencies(packageInstallCommand("pacman", ["git"]), () => {}, async command => {
+            calls.push(command);
+            return result("Dismissed", 126);
+        }), /cancelled or denied/);
+        assert.equal(calls.length, 1);
+        assert.ok(calls[0].endsWith("pkexec"));
+    });
+});
+
+describe("Linux source builds", () => {
+    it("rejects process errors and timeouts even with a zero exit code", async () => {
+        await assert.rejects(checked("cargo", [], {}, async () => result("compile failure", 1)), /compile failure/);
+        await assert.rejects(checked("cargo", [], {}, async () => ({ ...result(), timedOut: true })), /timed out/);
+        await assert.rejects(checked("cargo", [], {}, async () => ({ ...result(), spawnError: "missing compiler" })), /missing compiler/);
+    });
+
+    it("tracks full Git revisions and rejects empty remote refs", async () => {
+        const revision = "a".repeat(40);
+        assert.equal(await sourceRevision("xodus", 5000, async () => result(`${revision}\trefs/heads/main\n`)), revision);
+        await assert.rejects(sourceRevision("xodus", 5000, async () => result()), /no valid/);
+    });
+
+    it("builds both Xodus binaries with nproc and retains its source and Cargo artifacts", async () => {
+        const folder = await fs.mkdtemp(path.join(os.tmpdir(), "linux-build-test-"));
+        const calls: { command: string; args: string[] }[] = [];
+        try {
+            await buildSource("xodus", "a".repeat(40), path.join(folder, "stage"), path.join(folder, "installed"), () => {}, () => {}, async (command, args, options) => {
+                calls.push({ command, args });
+                if (command === "nproc") return result("32\n");
+                const cwd = options!.cwd!;
+                if (command === "git" && args[0] === "checkout") await fs.writeFile(path.join(cwd, "Cargo.toml"), 'rust-version = "1.98.0"');
+                if (command === "rustc") return result("rustc 1.98.1");
+                if (command === "cargo") {
+                    await fs.mkdir(path.join(cwd, "target/release"), { recursive: true });
+                    for (const name of ["xodus-cli", "xodus-service"]) await fs.writeFile(path.join(cwd, "target/release", name), name);
+                }
+                return result();
+            });
+            assert.match(await fs.readFile(path.join(folder, "stage/bin/xodus-service"), "utf8"), /xodus-service/);
+            assert.ok(calls.find(call => call.command === "cargo")!.args.includes("--locked"));
+            assert.deepEqual(calls.find(call => call.command === "cargo")!.args.slice(-2), ["--jobs", "32"]);
+            await fs.access(path.join(folder, "installed.build/source/Cargo.toml"));
+            await fs.access(path.join(folder, "installed.build/source/target/release/xodus-service"));
+        } finally { await fs.rm(folder, { recursive: true, force: true }); }
+    });
+
+    it("retains Git edits and Cargo objects after failure and reuses them on retry", async () => {
+        const { run } = await import("../src/shared/diagnostics/ProcessRunner.ts");
+        const folder = await fs.mkdtemp(path.join(os.tmpdir(), "xodus-retry-build-"));
+        const upstream = path.join(folder, "upstream");
+        const installation = path.join(folder, "xodus");
+        const staging = `${installation}.staging`;
+        const workspace = `${installation}.build`;
+        const checkout = path.join(workspace, "source");
+        let fail = true;
+        try {
+            await fs.mkdir(upstream);
+            await checked("git", ["init", "--quiet"], { cwd: upstream });
+            await fs.writeFile(path.join(upstream, "source.c"), "original\n");
+            await fs.writeFile(path.join(upstream, "Cargo.toml"), 'rust-version = "1.98.0"');
+            await checked("git", ["add", "source.c", "Cargo.toml"], { cwd: upstream });
+            await checked("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--no-gpg-sign", "-m", "fixture"], { cwd: upstream });
+            await checked("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "--no-gpg-sign", "--allow-empty", "-m", "next revision"], { cwd: upstream });
+            const revision = (await checked("git", ["rev-parse", "HEAD"], { cwd: upstream })).stdout.trim();
+            const { DEFAULT_LINUX_TOOL_SETTINGS } = await import("../src/shared/linux/LinuxToolSettings.ts");
+            const settings = { ...DEFAULT_LINUX_TOOL_SETTINGS, xodusUpstream: upstream };
+            const execute: import("../src/shared/linux/LinuxBuild.ts").Execute = async (command, args, options) => {
+                if (command === "git") return run(command, args, options);
+                if (command === "nproc") return result("24\n");
+                if (command === "rustc") return result("rustc 1.98.1");
+                if (command === "cargo") {
+                    assert.deepEqual(args.slice(-2), ["--jobs", "24"]);
+                    const target = path.join(options!.cwd!, "target/release");
+                    await fs.mkdir(target, { recursive: true });
+                    const object = path.join(target, "compiled.o");
+                    if (fail) { await fs.writeFile(object, "compiled work"); return result("compiler failed", 1); }
+                    assert.equal(await fs.readFile(object, "utf8"), "compiled work");
+                    for (const name of ["xodus-cli", "xodus-service"]) await fs.writeFile(path.join(target, name), name);
+                }
+                return result();
+            };
+            const build = (): Promise<void> => buildSource("xodus", revision, staging, installation, () => {}, () => {}, execute, settings);
+            await assert.rejects(build(), /compiler failed/);
+            // ToolArtifact removes failed installations, while the build cache stays outside staging.
+            await fs.rm(staging, { recursive: true, force: true });
+            await fs.writeFile(path.join(checkout, "source.c"), "edited for debugging\n");
+            fail = false;
+            await build();
+            await fs.access(path.join(staging, "bin/xodus-cli"));
+            await fs.access(path.join(workspace, "source/target/release/compiled.o"));
+            await checked("git", ["rev-parse", "--verify", "HEAD^"], { cwd: checkout });
+            const diff = await checked("git", ["diff", "--", "source.c"], { cwd: checkout });
+            assert.match(diff.stdout, /edited for debugging/);
+            assert.equal((await checked("git", ["rev-parse", "HEAD"], { cwd: checkout })).stdout.trim(), revision);
+        } finally { await fs.rm(folder, { recursive: true, force: true }); }
+    });
+
+    it("checks the service's linkage without launching its credential and socket setup", async () => {
+        const folder = await fs.mkdtemp(path.join(os.tmpdir(), "xodus-verify-test-"));
+        const calls: string[] = [];
+        try {
+            await fs.mkdir(path.join(folder, "bin"));
+            for (const name of ["xodus-cli", "xodus-service"]) await fs.writeFile(path.join(folder, "bin", name), name, { mode: 0o755 });
+            await verifySource("xodus", folder, async command => { calls.push(command); return result("linked"); });
+            assert.ok(calls.includes(path.join(folder, "bin/xodus-cli")));
+            assert.ok(!calls.includes(path.join(folder, "bin/xodus-service")));
+            await assert.rejects(verifySource("xodus", folder, async () => result("libwebkit.so => not found")), /missing runtime libraries/);
+        } finally { await fs.rm(folder, { recursive: true, force: true }); }
+    });
+});
+
+describe("persistent xodus-service setup", () => {
+    it("uses the requested private runtime and home with the service executable", () => {
+        assert.deepEqual(xodusEnvironment("/tmp/amethyst data"), {
+            HOME: process.env.HOME || os.homedir(), XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR,
+        });
+        const unit = xodusUnit("/tmp/tools/bin/xodus-service", "/tmp/amethyst data", "unix:path=/run/user/1000/bus");
+        assert.match(unit, /ExecStart="\/tmp\/tools\/bin\/xodus-service"/);
+        assert.doesNotMatch(unit, /Environment="HOME=/);
+        assert.doesNotMatch(unit, /Environment="XDG_RUNTIME_DIR=/);
+        assert.match(unit, /Restart=always/);
+        assert.match(unit, /WantedBy=default.target/);
+        assert.match(unit, /UMask=0077/);
+    });
+
+    it("escapes systemd specifiers and shell-sensitive autostart paths", () => {
+        assert.match(xodusUnit("/tmp/100%/$tools/xodus-service", "/tmp/a\"b"), /100%%\/\$\$tools/);
+        const script = xodusAutostartScript("/tmp/a'b/bin/xodus-service", "/tmp/a b");
+        assert.ok(script.includes(`'/tmp/a'"'"'b/bin/xodus-service'`));
+        assert.match(script, /flock -n 9/);
+        assert.match(script, /while :; do/);
+        assert.match(script, /sleep 10/);
+    });
+
+    it("enables the user service and confirms its socket without changing the manager's HOME", { skip: process.platform !== "linux" }, async () => {
+        const folder = await fs.mkdtemp(path.join(os.tmpdir(), "xodus-service-test-"));
+        const originalRuntime = process.env.XDG_RUNTIME_DIR;
+        process.env.XDG_RUNTIME_DIR = folder;
+        const originalConfig = process.env.XDG_CONFIG_HOME;
+        process.env.XDG_CONFIG_HOME = path.join(folder, "config");
+        const server = net.createServer(socket => socket.destroy());
+        const calls: string[][] = [];
+        try {
+            const executable = path.join(folder, "xodus-service");
+            const data = path.join(folder, "data");
+            await fs.writeFile(executable, "test", { mode: 0o700 });
+            const setup = await setupXodusService(executable, data, () => {}, async (_command, args, options) => {
+                calls.push(args);
+                assert.notEqual(options?.env?.HOME, path.join(data, "home"));
+                if (args.includes("show-environment")) return result("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus\n");
+                if (args.includes("restart")) await new Promise<void>((resolve, reject) => {
+                    server.once("error", reject);
+                    server.listen(path.join(folder, "xodus.sock"), resolve);
+                });
+                return result();
+            });
+            assert.equal(setup.manager, "systemd");
+            await assertXodusReady(data);
+            await assertXodusReady(path.join(folder, "different-data")); // All tools use the same session socket.
+            assert.ok(calls.some(args => args.includes("enable")));
+            assert.ok(calls.some(args => args.includes("is-active")));
+            assert.equal((await fs.stat(setup.runtime)).mode & 0o777, 0o700);
+            assert.equal(setup.home, process.env.HOME || os.homedir());
+            assert.match(await fs.readFile(setup.configuration, "utf8"), /ExecStart=.*xodus-service/);
+        } finally {
+            if (originalRuntime === undefined) delete process.env.XDG_RUNTIME_DIR;
+            else process.env.XDG_RUNTIME_DIR = originalRuntime;
+            if (originalConfig === undefined) delete process.env.XDG_CONFIG_HOME;
+            else process.env.XDG_CONFIG_HOME = originalConfig;
+            if (server.listening) await new Promise<void>(resolve => server.close(() => resolve()));
+            await fs.rm(folder, { recursive: true, force: true });
+        }
+    });
+});

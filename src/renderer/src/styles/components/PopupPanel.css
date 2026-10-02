@@ -147,6 +147,9 @@
 }
 
 .version-picker-item {
+    background: transparent;
+    border: 0;
+    text-align: left;
     padding: 8px 10px;
     min-height: 40px;
     box-sizing: border-box;

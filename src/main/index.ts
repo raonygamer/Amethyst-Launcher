@@ -3,13 +3,20 @@
 import { discardRun, mainLog } from "./diagnostics/LogWriter";
 
 import { is } from "@electron-toolkit/utils";
-import { app, BrowserWindow, dialog, ipcMain, Menu, MenuItem, nativeTheme, shell } from "electron";
+import { app, autoUpdater as nativeAutoUpdater, BrowserWindow, dialog, ipcMain, Menu, MenuItem, nativeImage, nativeTheme, shell, Tray } from "electron";
 import { autoUpdater } from "electron-updater";
 import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
 
 import { describeError } from "../shared/diagnostics/Log";
+import { XODUS_ACCOUNT_LOGIN, XODUS_ACCOUNT_LOGOUT, XODUS_ACCOUNT_REFRESH } from "../shared/linux/XodusAccountTypes";
+import { getXodusAccountSnapshot } from "./linux/XodusAccount";
+import { loginToXodus, logoutOfXodus } from "./linux/XodusLogin";
+import { createProfileShortcutSync } from "./linux/ProfileShortcuts";
+import { PROFILE_SHORTCUTS_SYNC } from "../shared/linux/ProfileShortcuts";
+import { isProfileLaunchUrl, keepWindowInBackground, revealWindow } from "./BackgroundWindow";
+import launcherIcon from "../renderer/src/assets/icons/128x128.png?asset";
 import { registerDownloadIpc } from "./net/DownloadService";
 import { registerIconScheme, serveIcons } from "./protocol/IconProtocol";
 
@@ -32,6 +39,31 @@ registerIconScheme();
 }
 
 let mainWindow: Electron.BrowserWindow | null = null;
+let tray: Tray | null = null;
+let quitting = false;
+let protocolReady = false;
+let backgroundLaunchRequested = false;
+const pendingProtocolUrls: string[] = [];
+
+function showMainWindow(): void {
+    if (!app.isReady()) { void app.whenReady().then(showMainWindow); return; }
+    if (!mainWindow || mainWindow.isDestroyed()) {
+        mainWindow = createWindow();
+        mainWindow.once("ready-to-show", () => { if (mainWindow) revealWindow(mainWindow); });
+    } else revealWindow(mainWindow);
+}
+
+function createTray(): void {
+    tray = new Tray(nativeImage.createFromPath(launcherIcon).resize({ width: 22, height: 22 }));
+    tray.setToolTip("Amethyst Launcher");
+    tray.setContextMenu(Menu.buildFromTemplate([
+        { label: "Open Amethyst Launcher", click: showMainWindow },
+        { type: "separator" },
+        { label: "Quit Amethyst Launcher", click: () => app.quit() },
+    ]));
+    tray.on("click", showMainWindow);
+    tray.on("double-click", showMainWindow);
+}
 
 /** Every renderer-bound send goes through here, so a dropped message is never silent. */
 function sendToWindow(scope: string, channel: string, payload?: unknown): boolean {
@@ -137,11 +169,20 @@ function createWindow(): BrowserWindow {
             preload: path.join(app.getAppPath(), "/out/preload/index.js"),
             nodeIntegration: true,
             contextIsolation: false,
+            backgroundThrottling: false,
         },
         frame: false,
     });
 
     win.setMenuBarVisibility(false);
+    keepWindowInBackground(win, () => quitting);
+    win.on("query-session-end", () => { quitting = true; });
+    win.on("session-end", () => { quitting = true; });
+    // HashRouter navigation can emit loading events while keeping the same renderer and IPC
+    // listener. Only a new main-frame document needs a new readiness handshake.
+    win.webContents.on("did-start-navigation", details => {
+        if (details.isMainFrame && !details.isSameDocument) protocolReady = false;
+    });
 
     if (devRendererUrl) {
         mainLog("INFO", "window", `Loading dev renderer from ${devRendererUrl}`);
@@ -156,7 +197,11 @@ function createWindow(): BrowserWindow {
         mainLog("ERROR", "window", `Renderer failed to load ${validatedURL}: ${errorDescription} (${errorCode})`);
     });
     win.on("unresponsive", () => mainLog("WARN", "window", "Renderer stopped responding"));
-    win.on("closed", () => mainLog("INFO", "window", "Main window closed"));
+    win.on("closed", () => {
+        if (mainWindow === win) mainWindow = null;
+        protocolReady = false;
+        mainLog("INFO", "window", "Main window closed");
+    });
 
     return win;
 }
@@ -188,8 +233,8 @@ ipcMain.on("TITLE_BAR_ACTION", (_, args) => {
             mainWindow.minimize();
             break;
         case "CLOSE":
-            mainLog("INFO", "ipc", "TITLE_BAR_ACTION close, destroying window");
-            mainWindow.destroy();
+            mainLog("INFO", "ipc", "TITLE_BAR_ACTION close, continuing in background");
+            mainWindow.close();
             break;
         default:
             mainLog("WARN", "ipc", `TITLE_BAR_ACTION ignored: unknown action "${args}"`);
@@ -262,15 +307,23 @@ function extractProtocolUrl(argv: string[]): string | null {
 /** Forwards a protocol URL to the renderer if the window is ready. */
 function handleProtocolUrl(url: string): void {
     mainLog("INFO", "protocol", `Protocol URL received: ${url}`);
-    if (!mainWindow) {
-        mainLog("WARN", "protocol", `Dropping ${url}: no window exists yet, so nothing can act on it`);
+    if (isProfileLaunchUrl(url)) backgroundLaunchRequested = true;
+    if (!mainWindow || !protocolReady) {
+        pendingProtocolUrls.push(url);
+        mainLog("INFO", "protocol", "Holding launch link until profiles and the protocol listener are ready");
         return;
     }
 
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.focus();
+    if (!isProfileLaunchUrl(url)) revealWindow(mainWindow);
     sendToWindow("protocol", "AMETHYST_PROTOCOL_URL", url);
 }
+
+ipcMain.on("AMETHYST_PROTOCOL_READY", event => {
+    if (event.sender !== mainWindow?.webContents) return;
+    protocolReady = true;
+    mainLog("INFO", "protocol", `Renderer ready; delivering ${pendingProtocolUrls.length} queued link(s)`);
+    for (const url of pendingProtocolUrls.splice(0)) handleProtocolUrl(url);
+});
 
 const MOD_ARCHIVE_EXTENSIONS = [".amethyst", ".zip"];
 
@@ -306,8 +359,7 @@ function handleModFilePath(file_path: string): void {
         return;
     }
 
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.focus();
+    revealWindow(mainWindow);
     sendToWindow("fileopen", "AMETHYST_OPEN_FILE", resolved);
 }
 
@@ -328,8 +380,12 @@ else {
         app.quit();
     });
 
-    app.on("before-quit", () => mainLog("INFO", "shutdown", "before-quit"));
+    app.on("before-quit", () => { quitting = true; mainLog("INFO", "shutdown", "before-quit"); });
+    nativeAutoUpdater.on("before-quit-for-update", () => { quitting = true; });
+    app.on("will-quit", () => { tray?.destroy(); tray = null; });
     app.on("quit", (_event, exitCode) => mainLog("INFO", "shutdown", `quit with exit code ${exitCode}`));
+    app.on("activate", showMainWindow);
+    app.on("open-url", (event, url) => { event.preventDefault(); handleProtocolUrl(url); });
 
     // macOS delivers file opens as an event instead of argv.
     app.on("open-file", (event, file_path) => {
@@ -342,12 +398,14 @@ else {
         mainLog("INFO", "startup", `App ready, creating main window (version ${app.getVersion()})`);
         serveIcons();
         mainWindow = createWindow();
+        createTray();
 
         mainWindow.once("ready-to-show", () => {
-            mainLog("INFO", "window", "Window ready to show");
-            mainWindow!.show();
             // Handle the case where the app was cold-started via a protocol URL.
             const url = extractProtocolUrl(process.argv);
+            const background = isProfileLaunchUrl(url) || backgroundLaunchRequested;
+            mainLog("INFO", "window", background ? "Profile launch: keeping the window in the background" : "Window ready to show");
+            if (!background) mainWindow!.show();
             if (url) handleProtocolUrl(url);
             else mainLog("INFO", "protocol", "Cold start carried no amethyst-launcher:// URL");
 
@@ -360,17 +418,9 @@ else {
 
     app.on("second-instance", (_event, commandLine) => {
         mainLog("INFO", "startup", `second-instance argv: [${commandLine.slice(1).join(" ")}]`);
-        // When second instance is started, restore and focus on existing one.
-        if (mainWindow) {
-            if (mainWindow.isMinimized()) mainWindow.restore();
-            mainWindow.focus();
-        }
-        else {
-            mainLog("WARN", "startup", "second-instance arrived before this instance had a window");
-        }
-
         // Forward protocol URL if this instance was opened via deep-link.
         const url = extractProtocolUrl(commandLine);
+        if (!isProfileLaunchUrl(url)) showMainWindow();
         if (url) handleProtocolUrl(url);
 
         // Forward mod file path if this instance was opened by a file association.
@@ -380,6 +430,48 @@ else {
 }
 
 registerDownloadIpc();
+
+if (process.platform === "linux") {
+    const dataHome = process.env.XDG_DATA_HOME && path.isAbsolute(process.env.XDG_DATA_HOME)
+        ? process.env.XDG_DATA_HOME : path.join(app.getPath("home"), ".local/share");
+    const executable = app.isPackaged && process.env.APPIMAGE && path.isAbsolute(process.env.APPIMAGE)
+        ? process.env.APPIMAGE : process.execPath;
+    const syncShortcuts = createProfileShortcutSync({ dataHome, iconSource: launcherIcon,
+        command: app.isPackaged ? [executable] : [executable, app.getAppPath()],
+    });
+    ipcMain.handle(PROFILE_SHORTCUTS_SYNC, async (event, profiles: unknown) => {
+        if (event.sender !== mainWindow?.webContents) throw new Error("Only the launcher can update profile shortcuts.");
+        try { await syncShortcuts(profiles); }
+        catch (error) { mainLog("ERROR", "Profiles", `Could not update application-menu shortcuts: ${describeError(error)}`); throw error; }
+    });
+    ipcMain.handle(XODUS_ACCOUNT_LOGIN, async () => {
+        mainLog("INFO", "Xodus", "Opening account login");
+        try {
+            const result = await loginToXodus();
+            if (result.ok) getXodusAccountSnapshot.clearCache();
+            mainLog("INFO", "Xodus", result.ok ? "Login window closed; refreshing account status" : "Login did not complete");
+            return result;
+        } catch {
+            return { ok: false, message: "Could not open Xodus login. Try again." };
+        }
+    });
+    ipcMain.handle(XODUS_ACCOUNT_LOGOUT, async () => {
+        try {
+            const result = await logoutOfXodus();
+            if (result.ok) getXodusAccountSnapshot.clearCache();
+            mainLog("INFO", "Xodus", result.ok ? "Logged out; refreshing account status" : "Logout did not complete");
+            return result;
+        } catch { return { ok: false, message: "Could not log out of Xodus. Try again." }; }
+    });
+    ipcMain.handle(XODUS_ACCOUNT_REFRESH, async (_event, force?: unknown) => {
+        try {
+            return await getXodusAccountSnapshot(force === true);
+        } catch {
+            // Do not send or log raw authentication/keyring exceptions.
+            throw new Error("Could not refresh account status.");
+        }
+    });
+}
 
 handle("get-app-version", () => app.getVersion(), result => result);
 

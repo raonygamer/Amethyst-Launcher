@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import { describeError, userMessage } from "@shared/diagnostics/Log";
 import { MinecraftButton } from "@renderer/components/MinecraftButton";
@@ -268,7 +269,10 @@ function CheckboxFilter({ label, options, selected, setSelected }: CheckboxFilte
 export function LogsPage() {
     const platform = useAppStore(state => state.platform);
     const setError = useAppStore(state => state.setError);
-    const logsDir = useMemo(() => path.join(platform.getPaths().amethystPath, "Launcher", "Logs"), [platform]);
+    const logsDir = useMemo(() => {
+        const currentLog = launcherLogPath();
+        return currentLog ? path.dirname(currentLog) : path.join(platform.getPaths().amethystPath, "Launcher", "Logs");
+    }, [platform]);
 
     const [files, setFiles] = useState<LogFile[]>([]);
     const [selected, setSelected] = useState<string | null>(null);
@@ -601,7 +605,7 @@ export function LogsPage() {
                     )}
                 </div>
             </div>
-            {contextMenu && (
+            {contextMenu && createPortal(
                 <div
                     ref={contextMenuRef}
                     className="logs-context-menu"
@@ -616,7 +620,7 @@ export function LogsPage() {
                     <div className="logs-context-menu-item logs-context-menu-item-danger" onClick={() => deleteLog(contextMenu.file)}>
                         <p className="minecraft-seven">Delete</p>
                     </div>
-                </div>
+                </div>, document.body
             )}
         </div>
     );

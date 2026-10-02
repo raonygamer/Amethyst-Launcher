@@ -1,9 +1,10 @@
+import { prepareProtonLaunchEnvironment, withXodusSocketMount } from "@shared/linux/ProtonLaunchEnvironment";
+import { spawnLoggedGame } from "@renderer/scripts/diagnostics/GameOutput";
 import { log } from "@renderer/scripts/LauncherLog";
 import { ArchiveToolArtifact } from "./ToolArtifact";
 import { LauncherTools } from "./LauncherTools";
 
 const path = window.require("path") as typeof import("path");
-const child = window.require("child_process") as typeof import("child_process");
 const { shellEnv } = window.require("shell-env") as typeof import("shell-env");
 
 /**
@@ -48,38 +49,34 @@ export class UMULauncher extends ArchiveToolArtifact {
         const { path: gdkProtonPath } = await LauncherTools.GDKProton.check({ checkForUpdates });
 
         const envs = await shellEnv();
-        const env = {
-            ...envs,
+        const ownEnv = {
             ...envVars,
-            "PROTONPATH": gdkProtonPath
+            PROTONPATH: gdkProtonPath,
         };
-
+        const env = await withXodusSocketMount({
+            ...envs,
+            ...ownEnv,
+        });
+        if (env.PRESSURE_VESSEL_FILESYSTEMS_RW !== (envVars.PRESSURE_VESSEL_FILESYSTEMS_RW ?? envs.PRESSURE_VESSEL_FILESYSTEMS_RW)) {
+            log(this.name, `Sharing Xodus socket ${path.join(env.XDG_RUNTIME_DIR!, "xodus.sock")} with the Steam container`);
+        }
         // The launcher's own additions only. The inherited shell environment is not logged:
         // it is long and routinely carries tokens the user never meant to hand over.
-        const ownEnv = { ...envVars, PROTONPATH: gdkProtonPath };
         log(
             this.name,
             `Spawning ${executable} ${gamePath} in ${path.dirname(gamePath)} with `
-            + `${Object.entries(ownEnv).map(([k, v]) => `${k}=${v}`).join(", ")} `
+            + `${Object.keys(ownEnv).join(", ")} `
             + `on top of ${Object.keys(envs).length} inherited variables`
         );
 
-        const proc = child.spawn(executable, [gamePath], {
-            env: env,
-            cwd: path.dirname(gamePath),
-            stdio: ["ignore", "pipe", "pipe"],
-            detached: true
+        if (!envVars.WINEPREFIX) throw new Error("A profile Wine prefix is required.");
+        env.PROTONPATH = await prepareProtonLaunchEnvironment(gdkProtonPath, envVars.WINEPREFIX, {
+            ...envVars,
         });
+        log(this.name, "Applying profile variables after the Steam container starts; HOME and runtime inherit session defaults unless explicitly configured in the profile");
 
-        // Piped output has to be read. Left unread the pipe fills and the game blocks on its own
-        // logging. Left on console rather than log(): it is the game's own stream, line by line,
-        // and the console shim records it either way.
-        proc.stdout?.on("data", data => console.log(`[${this.name}] ${data.toString().trimEnd()}`));
-        proc.stderr?.on("data", data => console.error(`[${this.name}] ${data.toString().trimEnd()}`));
-
-        proc.on("error", err => log(this.name, `${executable} reported an error: ${err.message}`));
-        proc.on("close", (code, signal) => {
-            log(this.name, `${gamePath} exited with code ${code}, signal ${signal}`);
+        const proc = spawnLoggedGame(executable, [gamePath], {
+            env, cwd: path.dirname(gamePath),
         });
 
         // A spawn failure arrives asynchronously, so without this wait the launch would report

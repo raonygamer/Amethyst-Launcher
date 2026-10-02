@@ -7,7 +7,8 @@ export default function ProgressBarRenderer(): React.ReactNode | null {
     const {
         message,
         progress,
-        show
+        show,
+        tasks
     } = ProgressBar.useState();
 
     return (
@@ -19,7 +20,7 @@ export default function ProgressBarRenderer(): React.ReactNode | null {
                 style={{ width: `${Math.max(0, Math.min(100, (progress ?? 0) * 100))}%` }}
             ></div>
             <p className="minecraft-seven launcher-progress-text" style={{ display: show ? "initial" : "none" }}>
-                {message}
+                {tasks.length > 1 ? `${tasks.length} actions · ${message}` : message}
             </p>
         </div>
     );

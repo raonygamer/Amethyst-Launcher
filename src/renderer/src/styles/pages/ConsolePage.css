@@ -1,0 +1,192 @@
+.console-page {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    min-width: 0;
+    padding: 12px 12px 26px;
+    gap: 10px;
+    border: 3px solid rgba(255, 255, 255, 0.08);
+    background-color: rgba(10, 13, 18, 0.62);
+    backdrop-filter: blur(14px);
+    color: var(--color-text);
+    overflow: hidden;
+}
+
+.console-header,
+.console-heading,
+.console-toolbar,
+.console-task-text,
+.console-footer {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
+.console-header,
+.console-footer {
+    justify-content: space-between;
+    flex-wrap: wrap;
+}
+
+.console-title {
+    font-size: 18px;
+    margin: 0;
+}
+
+.console-description,
+.console-footer {
+    color: var(--color-text-muted);
+    font-size: 12px;
+}
+
+.console-connection {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--color-text-dim);
+}
+
+.console-connection-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background-color: var(--color-text-muted);
+}
+
+.console-connection--live .console-connection-dot {
+    background-color: var(--color-confirm-light);
+}
+
+.console-toolbar {
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.console-filters { display: flex; gap: 6px 10px; flex-wrap: wrap; font-size: 11px; }
+.console-filters label { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.console-filters select { max-width: 150px; min-width: 0; height: 30px; padding: 3px; color: var(--color-text); background: rgba(0, 0, 0, 0.3); border: 1px solid rgba(255, 255, 255, 0.12); }
+.console-filters option { background: #15181e; color: #fff; }
+.console-filters .console-button { height: 30px; }
+.console-tasks { max-height: 110px; overflow: auto; flex-shrink: 1; display: flex; flex-direction: column; gap: 6px; }
+.console-task { flex-shrink: 0; }
+
+.console-search {
+    flex: 1 1 160px;
+    min-width: 100px;
+    padding: 6px 8px;
+    height: 34px;
+    border: 2px solid rgba(255, 255, 255, 0.12);
+    background-color: rgba(0, 0, 0, 0.3);
+    color: var(--color-text);
+    font-size: 13px;
+    user-select: text;
+}
+
+.console-search::placeholder {
+    color: var(--color-text-muted);
+}
+
+.console-button {
+    height: 34px;
+    padding: 4px 10px;
+    border: 2px solid rgba(255, 255, 255, 0.12);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), inset 0 -2px 0 rgba(0, 0, 0, 0.2);
+    background-color: rgba(0, 0, 0, 0.3);
+    color: var(--color-text);
+    font-size: 12px;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.console-button:hover:not(:disabled) {
+    background-color: rgba(255, 255, 255, 0.12);
+}
+
+.console-button[aria-pressed="true"] {
+    border-bottom-color: var(--color-confirm-light);
+}
+
+.console-button:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.console-task {
+    padding: 8px 10px;
+    background-color: rgba(0, 0, 0, 0.22);
+    border: 2px solid rgba(255, 255, 255, 0.08);
+}
+
+.console-task-text {
+    align-items: baseline;
+    font-size: 12px;
+}
+
+.console-task-status {
+    color: var(--color-text-muted);
+    flex-shrink: 0;
+}
+
+.console-task-message {
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.console-task-progress {
+    display: block;
+    width: 100%;
+    height: 4px;
+    margin-top: 8px;
+    accent-color: var(--color-confirm-light);
+}
+
+.console-output {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
+    padding: 10px;
+    border: 2px solid rgba(255, 255, 255, 0.08);
+    background-color: rgba(0, 0, 0, 0.3);
+    color: var(--color-text-dim);
+    font-family: ui-monospace, "Cascadia Code", "DejaVu Sans Mono", monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    scrollbar-gutter: stable;
+}
+
+.console-output,
+.console-output * {
+    user-select: text;
+}
+
+.console-entry {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.console-entry--warn {
+    color: var(--color-warning-text, #efc66b);
+}
+
+.console-entry--error {
+    color: var(--color-danger-text);
+}
+
+.console-entry--debug,
+.console-empty {
+    color: var(--color-text-muted);
+}
+
+.console-empty {
+    margin: 0;
+    font: inherit;
+}
+
+.console-footer {
+    gap: 4px 12px;
+}

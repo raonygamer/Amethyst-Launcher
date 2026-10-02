@@ -1,6 +1,6 @@
 import { PopupPanel } from "@renderer/components/PopupPanel";
 import { usePopupClose } from "@renderer/components/PopupCloseContext";
-import { GeneralSettingsTab } from "@renderer/pages/SettingsPage";
+import { SettingsTabs } from "@renderer/pages/SettingsPage";
 import { PopupUseArguments } from "@renderer/states/PopupStore";
 
 export function SettingsPopup({ submit: rawSubmit }: PopupUseArguments<void>) {
@@ -14,7 +14,7 @@ export function SettingsPopup({ submit: rawSubmit }: PopupUseArguments<void>) {
             size="xxl"
             bodyClassName="settings-popup-body scrollbar"
         >
-            <GeneralSettingsTab />
+            <SettingsTabs onBeforeVerify={() => rawSubmit()} />
         </PopupPanel>
     );
 }

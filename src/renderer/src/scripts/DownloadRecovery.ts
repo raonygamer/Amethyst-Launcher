@@ -26,11 +26,12 @@ async function downloadToTemp(
     url: string,
     filename: string,
     onProgress?: (transferred: number, total: number) => void,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    downloadId?: string
 ): Promise<{ ok: boolean; path?: string; error?: string }> {
     const filePath = path.join(os.tmpdir(), path.basename(filename));
     try {
-        await Downloader.downloadFile(url, filePath, (transferred, total) => onProgress?.(transferred, total), signal);
+        await Downloader.downloadFile(url, filePath, (transferred, total) => onProgress?.(transferred, total), signal, { downloadId });
         return { ok: true, path: filePath };
     } catch (e) {
         await fs.promises.rm(filePath, { force: true }).catch(cleanupError => {
@@ -85,7 +86,8 @@ async function resumeModDownload(pending: PendingDownload): Promise<void> {
                 progress: total > 0 ? transferred / total : 0,
             });
         },
-        abortController.signal
+        abortController.signal,
+        pending.id
     );
 
     if (!ok) {

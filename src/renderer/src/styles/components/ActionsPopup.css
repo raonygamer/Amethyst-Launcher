@@ -1,0 +1,28 @@
+.popup-box.actions-popup {
+    background: rgba(10, 13, 18, 0.62);
+    backdrop-filter: blur(14px);
+    color: var(--color-text);
+}
+
+.actions-summary,
+.action-heading,
+.action-details {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 12px;
+}
+
+.actions-summary p { margin: 0; }
+.actions-summary { flex-wrap: wrap; }
+.actions-empty { color: var(--color-text-muted); padding: 20px 0; }
+.action-heading strong { font-weight: normal; overflow-wrap: anywhere; min-width: 0; }
+.action-heading span { color: var(--color-text-muted); flex-shrink: 0; }
+.action-card { padding: 14px; background: rgba(0, 0, 0, 0.25); border: 1px solid rgba(255, 255, 255, 0.1); }
+.action-card--error { border-color: var(--color-danger-text); }
+.action-card progress { width: 100%; height: 6px; margin: 12px 0; accent-color: var(--color-confirm-light); }
+.action-details { color: var(--color-text-muted); flex-wrap: wrap; }
+.actions-popup button { background: rgba(0, 0, 0, 0.3); color: var(--color-text); border: 1px solid rgba(255, 255, 255, 0.15); padding: 6px 10px; cursor: pointer; }
+.actions-popup button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.12); }
+.actions-popup button:disabled { opacity: 0.4; cursor: default; }

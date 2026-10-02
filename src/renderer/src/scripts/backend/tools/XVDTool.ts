@@ -74,6 +74,7 @@ export class XVDTool extends ToolArtifact {
      */
     protected checkDefaults(): DefaultCheckOptions {
         return {
+            ...super.checkDefaults(),
             promptForUpdate: true,
             allowOutdated: true,
             releaseFetchTimeout: 1500,
@@ -164,7 +165,7 @@ export class XVDTool extends ToolArtifact {
      * Progress is reported through the global {@link ProgressBar}.
      *
      * @param inputFile      Absolute path to the `.xvd` file to decrypt.
-     * @param cikKeys        Record of CIK UUID to hex-encoded CIK data. All keys will be tried until one succeeds.
+     * @param cikKeys        CIK UUID to hex-encoded 48-byte record (16-byte GUID + 32-byte key).
      * @param shouldAskUpdate When `true`, prompts the user before updating XVDTool.
      * @returns Always resolves to `null` (output is reported via progress events).
      */
@@ -178,6 +179,9 @@ export class XVDTool extends ToolArtifact {
         if (entries.length === 0) {
             log(this.name, `No CIK keys were supplied for '${inputFile}', so it cannot be decrypted`);
             throw new Error("Decryption failed: no CIK keys were provided.");
+        }
+        if (entries.some(([, data]) => !/^[\da-f]{96}$/i.test(data))) {
+            throw new Error("Decryption failed: each CIK must contain a 16-byte GUID followed by a 32-byte key (96 hex characters).");
         }
 
         // `-nd -eu` rewrites the input in place. A key that fails after touching the file leaves
@@ -236,6 +240,13 @@ export class XVDTool extends ToolArtifact {
      */
     private async runTool(status: AppStatusType, executable: string, args: string[]): Promise<void> {
         log(this.name, `Running ${executable} ${redactCik(args).join(" ")}`);
+        const keyIndex = args.indexOf("-cikdata");
+        const record = keyIndex >= 0 ? args[keyIndex + 1] : undefined;
+        // Also redact tools that echo just the key portion of the complete record.
+        const secrets = record && /^[\da-f]+$/i.test(record)
+            ? [record, ...(record.length === 96 ? [record.slice(32)] : [])] : [];
+        const redactOutput = (text: string): string => secrets.reduce(
+            (output, secret) => output.replace(new RegExp(secret, "gi"), "<CIK redacted>"), text);
 
         await ProgressBar.runAsync(async ({ setStatus, setMessage, setProgress }) => {
             setStatus(status);
@@ -246,10 +257,15 @@ export class XVDTool extends ToolArtifact {
                 redactArgs: redactCik,
                 // Both streams: the JSON protocol is documented as arriving on either.
                 onLine: line => {
-                    const error = this.consumeLine(line, setMessage, setProgress);
+                    const error = this.consumeLine(redactOutput(line), setMessage, setProgress);
                     if (error) toolErrors.push(error);
                 },
             });
+            // A failed tool can echo its input. Redact that too, not just our command log.
+            result.stdout = redactOutput(result.stdout);
+            result.stderr = redactOutput(result.stderr);
+            result.output = redactOutput(result.output);
+            if (result.spawnError) result.spawnError = redactOutput(result.spawnError);
 
             if (result.spawnError || result.timedOut || result.code !== 0 || toolErrors.length > 0) {
                 log(

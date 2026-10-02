@@ -120,7 +120,8 @@ export async function installDiscoveredMod({ modId, release, profileUuid }: Inst
                     progress: total > 0 ? transferred / total : 0,
                 });
             },
-            abortController.signal
+            abortController.signal,
+            { downloadId }
         );
 
         useDownloadStore.getState().updateDownload(downloadId, { status: "extracting", progress: 1 });

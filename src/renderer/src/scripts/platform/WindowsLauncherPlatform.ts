@@ -1,3 +1,4 @@
+import { parseProfileEnvironment } from "@renderer/scripts/domain/ProfileEnvironment";
 import { Channel, CHANNELS } from "@renderer/scripts/domain/Channel";
 import { Profile, isModded } from "@renderer/scripts/domain/Profile";
 import { moveDirectory } from "@renderer/scripts/Directories";
@@ -270,7 +271,7 @@ export class WindowsLauncherPlatform implements ILauncherPlatform {
         status("Starting Minecraft...");
         // The manifest stays. It describes how this profile is set up, not one launch of it, so
         // starting the game from the Start menu afterwards loads the same mods the launcher did.
-        const confirmed = await Machine.startGame(version.path, status);
+        const confirmed = await Machine.startGame(version.path, status, parseProfileEnvironment(profile.environmentVariables));
 
         log(
             "Launch",

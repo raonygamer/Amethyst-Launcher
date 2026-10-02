@@ -7,6 +7,7 @@ import { usePopupClose } from "@renderer/components/PopupCloseContext";
 import { ImportVersionPopup } from "@renderer/popups/ImportVersionPopup";
 import { pickMsixvcFile } from "@renderer/scripts/versions/MsixvcPicker";
 import { Channel, channelLabel } from "@renderer/scripts/domain/Channel";
+import { AUTOMATIC_VERSIONS } from "@renderer/scripts/domain/AutomaticVersion";
 import { CatalogVersion, catalogLabel } from "@renderer/scripts/versions/Catalog";
 import { ImportRequest } from "@renderer/scripts/versions/VersionService";
 import { describeError, userMessage } from "@shared/diagnostics/Log";
@@ -131,6 +132,14 @@ export function VersionPickerPopup({ submit: rawSubmit, state, restrictToChannel
                 </>
             }
         >
+            <p className="minecraft-seven version-picker-section-title">Automatic updates</p>
+            {AUTOMATIC_VERSIONS.filter(version => !restrictToChannel || version.channel === restrictToChannel).map(version => (
+                <button key={version.versionUuid} type="button" className="version-picker-item"
+                    onClick={() => submit(version)}>
+                    <span className="minecraft-seven">{version.label}</span>
+                    <span className="minecraft-seven version-picker-item-tag">Check before every launch</span>
+                </button>
+            ))}
             {visibleInstalled.length > 0 && (
                 <>
                     <p className="minecraft-seven version-picker-section-title">Installed</p>

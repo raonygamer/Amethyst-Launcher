@@ -1,6 +1,8 @@
 import { describeError } from "@shared/diagnostics/Log";
 import { confirmAction } from "@renderer/popups/ConfirmPopup";
 import { Profile } from "@renderer/scripts/domain/Profile";
+import { automaticVersionChannel } from "@renderer/scripts/domain/AutomaticVersion";
+import { installedProfileVersion } from "@renderer/scripts/domain/ProfileVersion";
 import { log } from "@renderer/scripts/LauncherLog";
 import { InstalledVersion } from "@renderer/scripts/versions/InstalledVersion";
 import { useAppStore } from "@renderer/states/AppStore";
@@ -19,10 +21,14 @@ function reportOpen(what: string, target: string): void {
 }
 
 export function installedVersionFor(profile: Profile): InstalledVersion | null {
-    return useAppStore.getState().installedVersions.find(v => v.uuid === profile.versionUuid) ?? null;
+    const { installedVersions: installed, versions } = useAppStore.getState();
+    const channel = automaticVersionChannel(profile.versionUuid);
+    const latest = channel ? versions.catalog.latest(channel) : null;
+    return installedProfileVersion(profile, installed, latest?.uuid);
 }
 
 export function displayVersion(profile: Profile): string {
+    if (automaticVersionChannel(profile.versionUuid)) return profile.versionLabel;
     return installedVersionFor(profile)?.label || profile.versionLabel || "No version";
 }
 

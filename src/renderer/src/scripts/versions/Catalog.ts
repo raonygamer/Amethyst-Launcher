@@ -158,7 +158,7 @@ async function fetchRemote(): Promise<CachedCatalog> {
 
     let response: Response;
     try {
-        response = await fetch(DATABASE_URL);
+        response = await fetch(DATABASE_URL, { cache: "no-store" });
     } catch (e) {
         log("Catalog", `${DATABASE_URL} could not be reached: ${describeError(e)}`);
         throw new CatalogFetchError("unreachable", `${DATABASE_URL} could not be reached`, { cause: e });
@@ -242,12 +242,12 @@ export class Catalog {
         }
     }
 
-    async refresh(): Promise<readonly CatalogVersion[]> {
+    async refresh(options: { force?: boolean; allowStale?: boolean } = {}): Promise<readonly CatalogVersion[]> {
         const onDisk = this.readCache();
 
         if (onDisk) {
             const ageMinutes = (Date.now() - onDisk.fetchedAt.getTime()) / 60000;
-            if (ageMinutes * 60000 < REFRESH_INTERVAL_MS) {
+            if (!options.force && ageMinutes * 60000 < REFRESH_INTERVAL_MS) {
                 this.cache = onDisk;
                 log(
                     "Catalog",
@@ -274,6 +274,9 @@ export class Catalog {
                 );
             }
         } catch (e) {
+            if (options.allowStale === false) {
+                throw new Error("Could not check for the latest Minecraft version. Check your connection and try launching again.", { cause: e });
+            }
             if (!onDisk) {
                 log("Catalog", `Refresh failed and no cache exists at ${this.cacheFilePath}: ${describeError(e)}`);
                 const malformed = e instanceof CatalogFetchError && e.kind === "malformed";

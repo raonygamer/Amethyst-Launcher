@@ -50,6 +50,8 @@ export interface DefaultCheckOptions {
      * check and update flow.
      */
     checkForUpdates: boolean;
+    /** Fetch and install again even when this revision is already installed. Failures are reported. */
+    forceInstall: boolean;
 }
 
 /**
@@ -64,6 +66,12 @@ export interface ToolCheckResult {
     path: string;
     /** What action was taken to reach this state. */
     action: CheckAction;
+}
+
+/** A release download or a source revision that a subclass can build. */
+export interface ToolCandidate {
+    version: string;
+    asset?: GithubAsset;
 }
 
 /**
@@ -106,10 +114,8 @@ function stated(options: Partial<DefaultCheckOptions> | undefined): Partial<Defa
 }
 
 /**
- * Abstract base class for tools that are downloaded from GitHub Releases and
- * cached on disk. Subclasses only need to implement a handful of abstract
- * methods to describe platform-specific details (executable name, asset
- * selection, version comparison, and so on).
+ * Common lifecycle for cached tools downloaded from releases or built from source.
+ * Subclasses describe the executable, version comparison, candidate and staging steps.
  */
 export abstract class ToolArtifact implements IToolArtifact {
     readonly name: string;
@@ -125,7 +131,7 @@ export abstract class ToolArtifact implements IToolArtifact {
 
     /**
      * Main entry point. Checks whether the tool is installed and up-to-date,
-     * downloading / updating it as needed. Calls are serialised per tool.
+     * downloading or building it as needed. Calls are serialised per tool.
      */
     check(options?: Partial<DefaultCheckOptions>): Promise<ToolCheckResult> {
         const run = this.queue.then(() => this.runCheck(options), () => this.runCheck(options));
@@ -137,10 +143,10 @@ export abstract class ToolArtifact implements IToolArtifact {
      * Flow:
      * 1. Guard - reject unsupported platforms early.
      * 2. Read currently installed version from disk.
-     * 3. Fetch the latest GitHub release (subject to timeout).
-     * 4. Compare versions; skip the download when already current.
+     * 3. Resolve the latest release or source revision (subject to timeout).
+     * 4. Compare versions; skip when already current unless installation was explicitly forced.
      * 5. Optionally prompt the user before updating.
-     * 6. Download and extract into a staging folder, verify it, swap it in.
+     * 6. Prepare a staging folder, verify it, swap it in.
      * 7. Write new version file and fire {@link onInstalled}.
      */
     private async runCheck(requested?: Partial<DefaultCheckOptions>): Promise<ToolCheckResult> {
@@ -149,6 +155,7 @@ export abstract class ToolArtifact implements IToolArtifact {
         log(
             this.name,
             `check() for ${this.repository}: checkForUpdates=${options.checkForUpdates}, `
+            + `forceInstall=${options.forceInstall}, `
             + `promptForUpdate=${options.promptForUpdate}, allowOutdated=${options.allowOutdated}, `
             + `releaseFetchTimeout=${options.releaseFetchTimeout}ms`
         );
@@ -173,19 +180,20 @@ export abstract class ToolArtifact implements IToolArtifact {
         );
 
         // If already installed and the caller does not need an update check, return immediately.
-        if (isInstalled && !options.checkForUpdates) {
+        if (isInstalled && !options.checkForUpdates && !options.forceInstall) {
             log(this.name, `Already installed at '${currentVersion}' and no update check was asked for, skipping GitHub`);
             return this.buildResult(currentVersion, toolPath, executable, "up_to_date");
         }
 
-        // Attempt to fetch the latest release from GitHub.
-        let latestRelease: GithubRelease;
+        await this.prepareCheck();
+
+        let candidate: ToolCandidate;
         try {
-            latestRelease = await this.fetchLatestRelease(options.releaseFetchTimeout);
+            candidate = await this.resolveLatest(options.releaseFetchTimeout);
         } catch (error) {
             // If the tool is already installed and the caller allows an outdated
             // version, return the current installation rather than throwing.
-            if (isInstalled && options.allowOutdated) {
+            if (isInstalled && options.allowOutdated && !options.forceInstall) {
                 log(
                     this.name,
                     `GitHub could not be read, carrying on with the installed '${currentVersion}': ${describeError(error)}`
@@ -201,29 +209,16 @@ export abstract class ToolArtifact implements IToolArtifact {
             throw error;
         }
 
-        // Locate the release asset that matches the current platform/arch.
-        const asset = await this.findAsset(latestRelease);
-        if (!asset) {
-            const msg = `No suitable asset found for the latest release of ${this.name}.`;
-            log(
-                this.name,
-                `${msg} Release ${latestRelease.tagName} offers: `
-                + `${latestRelease.assets.map(a => a.name).join(", ") || "no assets"} `
-                + `(looking for platform ${window.process.platform}, arch ${window.process.arch})`
-            );
-            throw new Error(msg);
-        }
-
-        const latestTag = latestRelease.tagName;
+        const latestTag = candidate.version;
         const compareResult = this.compareTags(currentVersion, latestTag);
         log(
             this.name,
-            `Latest is '${latestTag}' with asset '${asset.name}'; installed '${currentVersion ?? "none"}' `
+            `Latest is '${latestTag}' (${candidate.asset?.name ?? "source build"}); installed '${currentVersion ?? "none"}' `
             + `compares ${compareResult}`
         );
 
         // Already on the latest (or newer) version, nothing to do.
-        if (compareResult >= 0 && isInstalled) {
+        if (compareResult >= 0 && isInstalled && !options.forceInstall) {
             log(this.name, `Installed '${currentVersion}' is not behind '${latestTag}', leaving it alone`);
             return this.buildResult(currentVersion, toolPath, executable, "up_to_date");
         }
@@ -235,26 +230,28 @@ export abstract class ToolArtifact implements IToolArtifact {
                 : true;
 
             if (!shouldUpdate) {
-                if (options.allowOutdated) {
+                if (options.allowOutdated && !options.forceInstall) {
                     log(this.name, `Update to '${latestTag}' declined, carrying on with '${currentVersion}'`);
                     return this.buildResult(currentVersion, toolPath, executable, "update_skipped");
                 }
-                const msg = `${this.name} is outdated and update was declined.`;
+                const msg = `${this.name} installation was required and was declined.`;
                 log(this.name, `Update to '${latestTag}' declined and '${currentVersion}' is not allowed to be used`);
                 throw new Error(msg);
             }
 
-            log(this.name, `Updating from '${currentVersion}' to '${latestTag}'`);
+            log(this.name, options.forceInstall && compareResult === 0
+                ? `Reinstalling '${latestTag}' as requested`
+                : `Updating from '${currentVersion}' to '${latestTag}'`);
         } else {
             log(this.name, `Installing '${latestTag}' for the first time`);
         }
 
         try {
-            await this.installStaged(asset, latestTag);
+            await this.installStaged(candidate);
         } catch (error) {
             // The working installation is still in place, so an update that fails half way leaves
             // the user with the tool they had rather than with nothing.
-            if (isInstalled && options.allowOutdated && fs.existsSync(executable)) {
+            if (isInstalled && options.allowOutdated && !options.forceInstall && fs.existsSync(executable)) {
                 log(
                     this.name,
                     `Install of '${latestTag}' failed, carrying on with '${currentVersion}': ${describeError(error)}`
@@ -277,20 +274,19 @@ export abstract class ToolArtifact implements IToolArtifact {
     }
 
     /**
-     * Downloads and extracts `asset` into a staging folder, checks the promised executable is
+     * Installs a candidate into a staging folder, checks the promised executable is
      * there, and only then puts it in place of the current installation. The working copy is
      * deleted last, and restored if the swap fails.
      */
-    private async installStaged(asset: GithubAsset, latestTag: string): Promise<void> {
+    private async installStaged(candidate: ToolCandidate): Promise<void> {
+        const latestTag = candidate.version;
         const toolPath = this.getFolder();
         const stagingPath = toolPath + STAGING_SUFFIX;
-        const archivePath = toolPath + ARCHIVE_SUFFIX;
 
         await fs.promises.rm(stagingPath, { recursive: true, force: true });
 
         try {
-            await this.download(asset, archivePath, latestTag);
-            await this.extract(archivePath, stagingPath, latestTag);
+            await this.stageInstall(candidate, stagingPath);
             await this.assertInstallUsable(stagingPath, latestTag);
             await this.swapIn(stagingPath, toolPath, latestTag);
         } catch (error) {
@@ -342,7 +338,32 @@ export abstract class ToolArtifact implements IToolArtifact {
      * Inspects the assets of a GitHub release and returns the one that matches
      * the current platform/arch, or `null` if none are suitable.
      */
-    protected abstract findAsset(release: GithubRelease): Promise<GithubAsset | null>;
+    protected async findAsset(_release: GithubRelease): Promise<GithubAsset | null> {
+        return null;
+    }
+
+    /** Source tools use this to check build prerequisites before touching the network. */
+    protected async prepareCheck(): Promise<void> {
+        // Release archives require no source-build prerequisites.
+    }
+
+    protected async resolveLatest(timeout: number): Promise<ToolCandidate> {
+        const release = await this.fetchLatestRelease(timeout);
+        const asset = await this.findAsset(release);
+        if (!asset) {
+            throw new Error(`No suitable asset found for ${this.name} ${release.tagName}. Available: `
+                + (release.assets.map(a => a.name).join(", ") || "none"));
+        }
+        return { version: release.tagName, asset };
+    }
+
+    /** Builds and downloads share the same verification, swap and rollback lifecycle. */
+    protected async stageInstall(candidate: ToolCandidate, destination: string): Promise<void> {
+        if (!candidate.asset) throw new Error(`${this.name} has no download asset.`);
+        const archivePath = this.getFolder() + ARCHIVE_SUFFIX;
+        await this.download(candidate.asset, archivePath, candidate.version);
+        await this.extract(archivePath, destination, candidate.version);
+    }
 
     /**
      * Compares two version tags.
@@ -356,7 +377,8 @@ export abstract class ToolArtifact implements IToolArtifact {
             promptForUpdate: false,
             allowOutdated: true,
             releaseFetchTimeout: 5000,
-            checkForUpdates: false
+            checkForUpdates: false,
+            forceInstall: false
         };
     }
 
@@ -486,7 +508,7 @@ export abstract class ToolArtifact implements IToolArtifact {
                     setProgress(percent);
                 },
                 undefined,
-                { expectedBytes: asset.size }
+                { expectedBytes: asset.size, displayName: `${this.name} ${latestTag}` }
             );
         });
     }

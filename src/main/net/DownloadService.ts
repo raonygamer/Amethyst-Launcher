@@ -1,3 +1,4 @@
+import { fetchXvdHeader } from "./XvdHeader";
 import { ipcMain, WebContents } from "electron";
 
 import {
@@ -8,6 +9,7 @@ import {
     NET_DOWNLOAD_PROGRESS,
     NET_DOWNLOAD_START,
     NET_HEAD,
+    NET_XVD_HEADER,
 } from "../../shared/net/DownloadIpc";
 import { describeError } from "../../shared/diagnostics/Log";
 import { mainLog } from "../diagnostics/LogWriter";
@@ -77,6 +79,7 @@ async function startDownload(contents: WebContents, request: DownloadRequest): P
 }
 
 export function registerDownloadIpc(): void {
+    ipcMain.handle(NET_XVD_HEADER, (_event, url: string) => fetchXvdHeader(url));
     ipcMain.handle(NET_HEAD, async (_event, url: string): Promise<HeadResponse> => {
         const result = await headRequest(url);
         mainLog(

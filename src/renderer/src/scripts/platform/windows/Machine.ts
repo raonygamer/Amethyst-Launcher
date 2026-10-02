@@ -1,6 +1,8 @@
+import { windowsGameEnvironment } from "@renderer/scripts/domain/ProfileEnvironment";
 import { Channel } from "@renderer/scripts/domain/Channel";
 import { errnoCode } from "@renderer/scripts/Directories";
 import { log, logBlock } from "@renderer/scripts/LauncherLog";
+import { spawnLoggedGame } from "@renderer/scripts/diagnostics/GameOutput";
 import { describeResult, psQuote, readMarker, runPowerShell } from "@shared/diagnostics/ProcessRunner";
 import { describeError } from "@shared/diagnostics/Log";
 import { ForeignGameDataError, ProcessInfo, SystemSetupRequiredError } from "../LauncherPlatform";
@@ -16,7 +18,6 @@ import * as Packages from "./Packages";
 import * as Preload from "./Preload";
 import * as VersionFiles from "./VersionFiles";
 
-const child = window.require("child_process") as typeof import("child_process");
 const path = window.require("path") as typeof import("path");
 
 export const GAME_EXECUTABLE = VersionFiles.GAME_EXECUTABLE;
@@ -465,7 +466,8 @@ export function foreignDataPath(channel: Channel): string | null {
  */
 export async function startGame(
     versionPath: string,
-    onStatus?: (m: string) => void
+    onStatus?: (m: string) => void,
+    environment: Record<string, string> = {},
 ): Promise<boolean> {
     const status = onStatus ?? (() => {});
     const executable = path.join(versionPath, GAME_EXECUTABLE);
@@ -475,7 +477,11 @@ export async function startGame(
 
     let spawned: import("child_process").ChildProcess;
     try {
-        spawned = child.spawn(executable, [], { cwd: versionPath, detached: true, stdio: "ignore" });
+        spawned = spawnLoggedGame(executable, [], { cwd: versionPath, env: windowsGameEnvironment(process.env, environment) });
+        await new Promise<void>((resolve, reject) => {
+            spawned.once("spawn", resolve);
+            spawned.once("error", reject);
+        });
         spawned.unref();
     } catch (e) {
         log("Machine", `Could not start ${executable}: ${describeError(e)}`);

@@ -1,3 +1,4 @@
+import { CHANNEL_IDS } from "../GameIdentity";
 import { Channel } from "@renderer/scripts/domain/Channel";
 import { log } from "@renderer/scripts/LauncherLog";
 import { launcherVersion } from "@renderer/scripts/Utility";
@@ -17,23 +18,6 @@ const PLACEHOLDER_PNG = Buffer.from(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQABNl7BcQAAAABJRU5ErkJggg==",
     "base64"
 );
-
-const CHANNEL_IDS: Record<Channel, { displayName: string; protocol: string; titleId: string; storeId: string; msaAppId: string }> = {
-    release: {
-        displayName: "Minecraft for Windows",
-        protocol: "minecraft",
-        titleId: "35760C07",
-        storeId: "9NBLGGH2JHXJ",
-        msaAppId: "0000000040159362",
-    },
-    preview: {
-        displayName: "Minecraft Preview for Windows",
-        protocol: "minecraft-preview",
-        titleId: "717D695F",
-        storeId: "9P5X4QVLC2XR",
-        msaAppId: "00000000403FC600",
-    },
-};
 
 /** Message plus errno, because the code is what says whether a write failure is repairable. */
 function describe(e: unknown): string {

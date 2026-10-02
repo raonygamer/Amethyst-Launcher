@@ -7,5 +7,6 @@
   },
   "[json]": {
     "editor.defaultFormatter": "vscode.json-language-features"
-  }
+  },
+  "terminal.integrated.fontFamily": "JetBrainsMono Nerd Font Mono"
 }

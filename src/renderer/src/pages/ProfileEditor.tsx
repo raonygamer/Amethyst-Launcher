@@ -1,3 +1,4 @@
+import { parseProfileEnvironment } from "@renderer/scripts/domain/ProfileEnvironment";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
@@ -151,6 +152,7 @@ function AddContentPopup({ submit: rawSubmit }: PopupUseArguments<string | "brow
 
 export function ProfileEditor() {
     const [profileName, setProfileName] = useState("");
+    const [environmentVariables, setEnvironmentVariables] = useState("");
     const [profileActiveMods, setProfileActiveMods] = useState<string[]>([]);
     const [profileModded, setProfileModded] = useState(false);
     const [profileVersionLabel, setProfileVersionLabel] = useState<string>("");
@@ -192,6 +194,7 @@ export function ProfileEditor() {
         if (!editingProfile) log("ProfileEditor", `No profile with uuid ${editingProfileUuid}; the editor is opening on an empty profile`);
         setLoadedProfileUuid(editingProfileUuid);
         setProfileName(editingProfile?.name ?? "New Profile");
+        setEnvironmentVariables(editingProfile?.environmentVariables ?? "");
         setProfileModded(editingProfile?.modded ?? false);
         setProfileActiveMods(editingProfile?.mods ?? []);
         setProfileVersionLabel(editingProfile?.versionLabel ?? "");
@@ -204,6 +207,10 @@ export function ProfileEditor() {
      * objects in place left every subscriber on an unchanged reference.
      */
     const pendingSave = useRef<(() => void) | null>(null);
+
+    let environmentError = "";
+    try { parseProfileEnvironment(environmentVariables); }
+    catch (error) { environmentError = userMessage(error); }
 
     /** Adding a mod is itself the Modded choice; nothing else on this page makes it. */
     const profileIsModded = profileModded || profileActiveMods.length > 0;
@@ -225,6 +232,7 @@ export function ProfileEditor() {
                 && stored.modded === profileIsModded
                 && stored.versionLabel === profileVersionLabel
                 && stored.versionUuid === profileVersionUuid
+                && (stored.environmentVariables ?? "") === environmentVariables
                 && stored.channel === profileChannel
                 && stored.mods.length === profileActiveMods.length
                 && stored.mods.every((mod, index) => mod === profileActiveMods[index]);
@@ -238,6 +246,7 @@ export function ProfileEditor() {
                 versionLabel: profileVersionLabel,
                 versionUuid: profileVersionUuid,
                 channel: profileChannel,
+                environmentVariables,
             }));
             state.saveData();
         };
@@ -245,7 +254,7 @@ export function ProfileEditor() {
         pendingSave.current = commit;
         const timer = setTimeout(commit, AUTOSAVE_DELAY_MS);
         return () => clearTimeout(timer);
-    }, [loadedProfileUuid, editingProfileUuid, profileName, profileIsModded, profileActiveMods, profileVersionLabel, profileVersionUuid, profileChannel]);
+    }, [loadedProfileUuid, editingProfileUuid, profileName, profileIsModded, profileActiveMods, profileVersionLabel, profileVersionUuid, profileChannel, environmentVariables]);
 
     /** Leaving the page is the end of typing, so the edit still in the debounce window is written. */
     useEffect(() => () => pendingSave.current?.(), []);
@@ -373,7 +382,8 @@ export function ProfileEditor() {
 
         log("ProfileEditor", `Play pressed on "${profile.name}" (${profile.uuid})`);
         try {
-            await doLaunchProfile(profile);
+            pendingSave.current?.();
+            await doLaunchProfile({ ...profile, environmentVariables });
         }
         catch (e) {
             log("ProfileEditor", `Launch of "${profile.name}" ended in an error shown to the user: ${describeError(e)}`);
@@ -610,6 +620,15 @@ export function ProfileEditor() {
                         </div>
                         <MinecraftButton text="Add Content" onClick={openAddContent} colorPallete={GRAY_MINECRAFT_BUTTON} style={{ "--mc-button-container-h": "34px", "--mc-button-container-w": "100%" }} />
                     </div>
+                </div>
+                <div className="profile-editor-environment">
+                    <label htmlFor="profile-environment" className="minecraft-seven text-input-label">Environment variables</label>
+                    <textarea id="profile-environment" className="minecraft-seven text-input-control" rows={3}
+                        spellCheck={false} value={environmentVariables} placeholder={"WINEDEBUG=-all\nDXVK_HUD=fps"}
+                        aria-invalid={Boolean(environmentError)} aria-describedby="profile-environment-help"
+                        onChange={event => setEnvironmentVariables(event.currentTarget.value)} />
+                    <p id="profile-environment-help" className="minecraft-seven">One NAME=value per line. Values are literal; no shell expansion. Saved automatically.</p>
+                    {environmentError && <p role="alert" className="minecraft-seven">{environmentError}</p>}
                 </div>
                 <div className="profile-editor-mod-divider" />
                 <div className="profile-editor-mod-list scrollbar">

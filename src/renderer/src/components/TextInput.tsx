@@ -18,6 +18,7 @@ export function TextInput({ label, text, setText, placeholder, style, autoFocus 
             <div className="text-input-box">
                 <input
                     type="text"
+                    aria-label={label || undefined}
                     className="minecraft-seven text-input-control"
                     spellCheck={false}
                     placeholder={placeholder}

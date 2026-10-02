@@ -8,6 +8,7 @@ import {
     echoToConsole,
     installConsoleForwarder,
 } from "@shared/diagnostics/Log";
+import { initializeLiveConsole } from "@renderer/states/LiveConsoleStore";
 
 const { ipcRenderer } = window.require("electron") as typeof import("electron");
 
@@ -61,3 +62,4 @@ installConsoleForwarder((level, message) =>
     send({ time: Date.now(), source: "renderer", scope: "console", level, message })
 );
 installGlobalHandlers();
+initializeLiveConsole();

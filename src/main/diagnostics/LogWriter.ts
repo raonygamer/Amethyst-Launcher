@@ -1,4 +1,4 @@
-import { app, ipcMain } from "electron";
+import { app, ipcMain, WebContents } from "electron";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -15,6 +15,13 @@ import {
     formatEntry,
     installConsoleForwarder,
 } from "../../shared/diagnostics/Log";
+import {
+    LIVE_CONSOLE_BATCH,
+    LIVE_CONSOLE_SUBSCRIBE,
+    LIVE_CONSOLE_UNSUBSCRIBE,
+    LiveConsoleBuffer,
+    LiveLogEntry,
+} from "../../shared/diagnostics/LiveConsole";
 
 /** Enough runs to still hold the evidence after a tester reproduces a bug a few times. */
 const KEEP_RUNS = 20;
@@ -29,6 +36,17 @@ const MACHINE_BLOCK_TIMEOUT_MS = 20_000;
 const MAX_RUN_BYTES = 64 * 1024 * 1024;
 
 const LABEL_WIDTH = 12;
+const LIVE_CONSOLE_INTERVAL_MS = 100;
+
+interface ConsoleSubscriber {
+    lastId: number;
+    cleanup: () => void;
+}
+
+const liveHistory = new LiveConsoleBuffer();
+const liveSubscribers = new Map<WebContents, ConsoleSubscriber>();
+let nextLiveId = 0;
+let liveFlush: ReturnType<typeof setTimeout> | undefined;
 
 export interface MachineReport {
     appx: string;
@@ -91,7 +109,69 @@ function appendRaw(text: string): void {
 }
 
 export function writeEntry(entry: LogEntry): void {
+    // Keep the live feed independent from disk availability and the log file's size cap.
+    liveHistory.append([{
+        ...entry,
+        id: ++nextLiveId,
+        source: redactHome(entry.source),
+        scope: redactHome(entry.scope),
+        message: redactHome(entry.message),
+    }]);
+    scheduleLiveFlush();
     appendRaw(`${formatEntry(entry)}\n`);
+}
+
+function unsubscribeConsole(contents: WebContents): void {
+    const subscriber = liveSubscribers.get(contents);
+    if (!subscriber) return;
+    liveSubscribers.delete(contents);
+    contents.removeListener("destroyed", subscriber.cleanup);
+    contents.removeListener("render-process-gone", subscriber.cleanup);
+    if (liveSubscribers.size === 0 && liveFlush !== undefined) {
+        clearTimeout(liveFlush);
+        liveFlush = undefined;
+    }
+}
+
+function sendConsoleBatch(contents: WebContents, entries: readonly LiveLogEntry[]): void {
+    if (contents.isDestroyed()) {
+        unsubscribeConsole(contents);
+        return;
+    }
+    try {
+        contents.send(LIVE_CONSOLE_BATCH, entries);
+        const subscriber = liveSubscribers.get(contents);
+        if (subscriber && entries.length > 0) subscriber.lastId = entries[entries.length - 1].id;
+    } catch {
+        // A renderer can disappear between isDestroyed and send. Never log feed failures back
+        // into the same feed, and do not retain a dead window in the subscriber list.
+        unsubscribeConsole(contents);
+    }
+}
+
+function scheduleLiveFlush(): void {
+    if (liveSubscribers.size === 0 || liveFlush !== undefined) return;
+    liveFlush = setTimeout(() => {
+        liveFlush = undefined;
+        // The bounded history doubles as the pending queue during output bursts.
+        const history = liveHistory.snapshot();
+        for (const [contents, subscriber] of liveSubscribers) {
+            const pending = history.filter(entry => entry.id > subscriber.lastId);
+            if (pending.length > 0) sendConsoleBatch(contents, pending);
+        }
+    }, LIVE_CONSOLE_INTERVAL_MS);
+    liveFlush.unref();
+}
+
+function subscribeConsole(contents: WebContents): void {
+    if (contents.isDestroyed()) return;
+    if (!liveSubscribers.has(contents)) {
+        const cleanup = (): void => unsubscribeConsole(contents);
+        liveSubscribers.set(contents, { lastId: 0, cleanup });
+        contents.once("destroyed", cleanup);
+        contents.once("render-process-gone", cleanup);
+    }
+    sendConsoleBatch(contents, liveHistory.snapshot());
 }
 
 export function mainLog(level: LogLevel, scope: string, message: string): void {
@@ -332,6 +412,9 @@ function installGlobalHandlers(): void {
 }
 
 function installIpc(): void {
+    ipcMain.on(LIVE_CONSOLE_SUBSCRIBE, event => subscribeConsole(event.sender));
+    ipcMain.on(LIVE_CONSOLE_UNSUBSCRIBE, event => unsubscribeConsole(event.sender));
+
     const accept = (entry: unknown): void => {
         const value = entry as Partial<LogEntry> | null;
         if (!value || typeof value.message !== "string") return;

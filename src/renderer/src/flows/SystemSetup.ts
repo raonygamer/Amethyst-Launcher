@@ -19,7 +19,7 @@ export async function runSystemSetup(required: SystemSetupRequiredError): Promis
     if (!accepted) {
         log("SystemSetup", `User declined: ${required.title}`);
         throw new Error(
-            `Minecraft cannot start until this is done, so the launch was stopped.\n\n${required.explanation}`
+            `Setup was cancelled.\n\n${required.explanation}`
         );
     }
 

@@ -1,6 +1,7 @@
 /** Suffix used while bytes are still arriving, so a partial file is never mistaken for a complete one. */
 export const PART_SUFFIX = ".part";
 
+export const NET_XVD_HEADER = "net:xvd-header";
 export const NET_HEAD = "net:head";
 export const NET_DOWNLOAD_START = "net:download:start";
 export const NET_DOWNLOAD_ABORT = "net:download:abort";

@@ -6,10 +6,13 @@ import { log } from "@renderer/scripts/LauncherLog";
 export interface DownloadItem {
     id: string;
     name: string;
-    type: "mod" | "version";
+    type: "mod" | "version" | "tool";
     progress: number;
     status: "queued" | "downloading" | "extracting" | "done" | "error";
     abortController: AbortController | null;
+    transferred?: number;
+    total?: number;
+    bytesPerSecond?: number;
 }
 
 /** Serializable metadata for crash recovery — stored in localStorage */
@@ -92,8 +95,6 @@ export function getPendingDownloads(): PendingDownload[] {
 
 interface DownloadStoreState {
     downloads: DownloadItem[];
-    panelOpen: boolean;
-    setPanelOpen: (open: boolean) => void;
     addDownload: (item: DownloadItem) => void;
     updateDownload: (id: string, partial: Partial<DownloadItem>) => void;
     removeDownload: (id: string) => void;
@@ -102,12 +103,9 @@ interface DownloadStoreState {
 
 export const useDownloadStore = create<DownloadStoreState>((set) => ({
     downloads: [],
-    panelOpen: false,
-    setPanelOpen: (open) => set({ panelOpen: open }),
     addDownload: (item) =>
         set(state => ({
-            downloads: [...state.downloads, item],
-            panelOpen: true,
+            downloads: [...state.downloads.filter(existing => existing.id !== item.id), item],
         })),
     // Only status transitions are logged; progress updates arrive many times a second.
     updateDownload: (id, partial) =>

@@ -2,6 +2,9 @@ import { describeError, userMessage } from "@shared/diagnostics/Log";
 import { log } from "./LauncherLog";
 import { inspectStamp, quarantineFile, stampFields, tryReadJsonFile, writeJsonAtomic } from "./Utility";
 import { Profile, parseProfile } from "./domain/Profile";
+import { PROFILE_SHORTCUTS_SYNC } from "@shared/linux/ProfileShortcuts";
+import type { InstalledVersion } from "./versions/InstalledVersion";
+import { automaticVersionChannel } from "./domain/AutomaticVersion";
 
 const fs = window.require("fs") as typeof import("fs");
 const path = window.require("path") as typeof import("path");
@@ -19,13 +22,14 @@ export class ProfileStore {
     private loaded = false;
     private unmoved = false;
 
-    constructor(private readonly filePath: string) {}
+    constructor(private readonly filePath: string, private readonly installedVersion: (profile: Profile) => InstalledVersion | null = () => null) {}
 
     /** A save is only ever a rewrite of what this store read, so reading has to come first. */
     load(): Profile[] {
         this.unmoved = false;
         const profiles = this.read();
         this.loaded = !this.unmoved;
+        if (profiles.length > 0) this.syncShortcuts(profiles);
         return profiles;
     }
 
@@ -102,5 +106,18 @@ export class ProfileStore {
         // create/edit/delete actions behind it are logged where the user performed them.
         fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
         writeJsonAtomic(this.filePath, { ...stampFields(FORMAT, FORMAT_VERSION), profiles });
+        this.syncShortcuts(profiles);
+    }
+
+    syncShortcuts(profiles: Profile[]): void {
+        if (!this.loaded || window.process.platform !== "linux") return;
+        const { ipcRenderer } = window.require("electron") as typeof import("electron");
+        void ipcRenderer.invoke(PROFILE_SHORTCUTS_SYNC, profiles.map(profile => {
+            const installed = this.installedVersion(profile);
+            const versionLabel = installed && automaticVersionChannel(profile.versionUuid)
+                ? `${profile.versionLabel} (${installed.version.toString()})` : profile.versionLabel;
+            return { uuid: profile.uuid, name: profile.name, versionLabel, versionPath: installed?.path ?? null };
+        }))
+            .catch(error => log("Profiles", `Could not update application-menu shortcuts: ${describeError(error)}`));
     }
 }

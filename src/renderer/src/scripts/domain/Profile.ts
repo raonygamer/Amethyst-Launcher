@@ -4,7 +4,7 @@ export interface Profile {
     uuid: string;
     name: string;
     channel: Channel;
-    /** The only version identity. Empty means no version chosen yet. */
+    /** Concrete version UUID or an AutomaticVersion selector. Empty means no selection. */
     versionUuid: string;
     /** Display text only — never used to resolve a version. */
     versionLabel: string;
@@ -15,6 +15,8 @@ export interface Profile {
      */
     modded: boolean;
     mods: string[];
+    /** Literal NAME=value entries, one per line; absent in older profiles. */
+    environmentVariables?: string;
 }
 
 export function isModded(profile: Profile): boolean {
@@ -37,6 +39,9 @@ export function parseProfile(raw: unknown, where: string): Profile {
         throw new Error(`${where}: "mods" must be an array of strings`);
     }
 
+    if (o.environmentVariables !== undefined && typeof o.environmentVariables !== "string") {
+        throw new Error(`${where}: "environmentVariables" must be a string`);
+    }
     const mods = o.mods as string[];
 
     return {
@@ -47,6 +52,7 @@ export function parseProfile(raw: unknown, where: string): Profile {
         versionLabel: text("versionLabel", true),
         modded: readModded(o, mods),
         mods,
+        ...(o.environmentVariables !== undefined ? { environmentVariables: o.environmentVariables as string } : {}),
     };
 }
 

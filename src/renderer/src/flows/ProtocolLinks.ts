@@ -1,6 +1,6 @@
 import { describeError } from "@shared/diagnostics/Log";
 import { log } from "@renderer/scripts/LauncherLog";
-import { useAppStore } from "@renderer/states/AppStore";
+import { appStateReady, useAppStore } from "@renderer/states/AppStore";
 import { ProgressBar } from "@renderer/states/ProgressBarStore";
 import { launchErrorMessage, launchProfileByUuid } from "@renderer/flows/Launch";
 
@@ -20,6 +20,7 @@ export function registerProtocolLinks(): void {
         await handleProtocolUrl(url);
     });
     log("Protocol", "Listening for amethyst-launcher:// links");
+    void appStateReady.then(ready => { if (ready) ipcRenderer.send("AMETHYST_PROTOCOL_READY"); });
 }
 
 /**
@@ -41,7 +42,7 @@ async function handleProtocolUrl(url: string): Promise<void> {
             return;
         }
 
-        const profileUuid = parsed.pathname.replace(/^\//, "");
+        const profileUuid = decodeURIComponent(parsed.pathname.replace(/^\//, ""));
         if (!profileUuid) {
             log("Protocol", `Ignoring ${url}: launchprofile carries no profile UUID after the slash`);
             useAppStore.getState().setError(

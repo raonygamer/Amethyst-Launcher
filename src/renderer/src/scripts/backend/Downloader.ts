@@ -2,6 +2,8 @@ const { ipcRenderer } = window.require("electron") as typeof import("electron");
 
 import { DownloadProgress } from "@renderer/scripts/backend/Progress";
 import { log } from "@renderer/scripts/LauncherLog";
+import { useDownloadStore } from "@renderer/states/DownloadStore";
+import { TransferRate } from "@shared/net/TransferRate";
 import {
     DownloadOutcome,
     DownloadProgressEvent,
@@ -20,6 +22,9 @@ export { PART_SUFFIX };
  * survives a chunked response.
  */
 export interface DownloadOptions {
+    /** Existing install entry to update, otherwise this transfer gets its own entry. */
+    downloadId?: string;
+    displayName?: string;
     /** Authoritative size from a source other than the response, e.g. the GitHub asset record. */
     expectedBytes?: number;
     connectTimeoutMs?: number;
@@ -70,14 +75,39 @@ export class Downloader {
             attempts: options.attempts,
         };
 
-        const cancel = (): void => void ipcRenderer.send(NET_DOWNLOAD_ABORT, id);
-        listeners.set(id, onProgress);
+        const displayId = options.downloadId ?? id;
+        const controller = new AbortController();
+        if (!options.downloadId) useDownloadStore.getState().addDownload({
+            id: displayId, name: options.displayName ?? to.split(/[\\/]/).pop() ?? "Download",
+            type: "tool", progress: 0, status: "downloading", abortController: controller,
+        });
+        const rate = new TransferRate();
+        let transferredBytes = 0;
+        const cancel = (): void => { ipcRenderer.send(NET_DOWNLOAD_ABORT, id); };
+        controller.signal.addEventListener("abort", cancel);
+        listeners.set(id, (transferred, total) => {
+            transferredBytes = transferred;
+            useDownloadStore.getState().updateDownload(displayId, { transferred, total,
+                progress: total > 0 ? Math.min(1, transferred / total) : 0, bytesPerSecond: rate.update(transferred) });
+            onProgress(transferred, total);
+        });
+        const pulse = window.setInterval(() => useDownloadStore.getState().updateDownload(displayId,
+            { bytesPerSecond: rate.update(transferredBytes) }), 1000);
         signal?.addEventListener("abort", cancel);
 
         let outcome: DownloadOutcome;
         try {
             outcome = await ipcRenderer.invoke(NET_DOWNLOAD_START, request) as DownloadOutcome;
+            useDownloadStore.getState().updateDownload(displayId, outcome.kind === "done"
+                ? { progress: 1, transferred: outcome.bytes, ...(!options.downloadId ? { status: "done" as const } : {}) }
+                : { status: "error" });
+        } catch (error) {
+            useDownloadStore.getState().updateDownload(displayId, { status: "error" });
+            throw error;
         } finally {
+            window.clearInterval(pulse);
+            useDownloadStore.getState().updateDownload(displayId, { bytesPerSecond: 0 });
+            controller.signal.removeEventListener("abort", cancel);
             listeners.delete(id);
             signal?.removeEventListener("abort", cancel);
         }

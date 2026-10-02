@@ -1,3 +1,4 @@
+import { readLinuxToolSettings, DEFAULT_LINUX_TOOL_SETTINGS, type LinuxToolSettings } from "@shared/linux/LinuxToolSettings";
 import { log } from "./LauncherLog";
 import { userMessage } from "@shared/diagnostics/Log";
 import { inspectStamp, quarantineFile, stampFields, tryReadJsonFile, writeJsonAtomic } from "./Utility";
@@ -6,6 +7,7 @@ const fs = window.require("fs") as typeof import("fs");
 const path = window.require("path") as typeof import("path");
 
 export interface LauncherConfig {
+    linux_tools?: LinuxToolSettings;
     keep_open: boolean;
     ui_theme: string;
     developer_mode: boolean;
@@ -13,6 +15,7 @@ export interface LauncherConfig {
 }
 
 const DEFAULTS: LauncherConfig = {
+    linux_tools: DEFAULT_LINUX_TOOL_SETTINGS,
     keep_open: true,
     ui_theme: "System",
     developer_mode: false,
@@ -34,6 +37,7 @@ function parseConfig(o: Record<string, unknown>): LauncherConfig {
     }
 
     return {
+        linux_tools: readLinuxToolSettings(o.linux_tools),
         keep_open: o.keep_open,
         ui_theme: o.ui_theme,
         developer_mode: o.developer_mode,

@@ -1,6 +1,34 @@
-/**MapofCIKUUIDtohex-encodedCIKdata.*/
-export const CIK_KEYS: Record<string,string>={
-"bdb9e791-c97c-3734-e1a8-bc602552df06":"91E7B9BD7CC93437E1A8BC602552DF06C9A969FBFCBBF5F46D71250AF226CF6AC7D15C25F9546344549391D16857391F",
-"1f49d63f-8bf5-1f8d-ed7e-dbd89477dad9":"3FD6491FF58B8D1FED7EDBD89477DAD9802814007571F6A353C710BA972EF113C6F250C54B315AF61A33CCA5DE85B08A",
-"33ec8436-5a0e-4f0d-b1ce-3f29c3955039":"3684EC330E5A0D4FB1CE3F29C3955039217587B8E319459CBA2EF26F8DE68EA89AB6DC0FBC1142D09F4498B0BEE22496",
-};
+import { NET_XVD_HEADER } from "@shared/net/DownloadIpc";
+import { xvdContentId } from "@shared/linux/XodusLicence";
+import { useXodusAccountStore } from "@renderer/states/XodusAccountStore";
+import { LauncherTools } from "./tools/LauncherTools";
+
+/** Run before any game bytes are downloaded or an imported archive is copied. */
+export async function requireDownloadAccount(): Promise<void> {
+    if (window.process.platform !== "linux") return;
+    await LauncherTools.Xodus.ensureVerified();
+    await useXodusAccountStore.getState().refresh();
+    const account = useXodusAccountStore.getState().snapshot;
+    if (account?.service !== "connected" || account.session !== "signed_in") {
+        throw new Error("Sign in with Xodus in the Account tab before downloading or importing Minecraft on Linux. Xodus must be running.");
+    }
+}
+
+export async function gameLicenceKeys(archive: string, amethystData: string): Promise<Record<string, string>> {
+    if (window.process.platform === "linux") {
+        await requireDownloadAccount();
+        return LauncherTools.Xodus.licenceKeys(archive, amethystData);
+    }
+    if (window.process.platform === "win32") return (await import("./WindowsDecryption")).CIK_KEYS;
+    throw new Error("Game licence retrieval is not supported on this platform.");
+}
+
+
+/** Only a small header is fetched before Xodus confirms the actual content entitlement. */
+export async function requireDownloadLicence(url: string, amethystData: string): Promise<void> {
+    if (window.process.platform !== "linux") return;
+    await requireDownloadAccount();
+    const { ipcRenderer } = window.require("electron") as typeof import("electron");
+    const header = await ipcRenderer.invoke(NET_XVD_HEADER, url) as Uint8Array;
+    await LauncherTools.Xodus.requireContentLicence(xvdContentId(Buffer.from(header)), amethystData);
+}

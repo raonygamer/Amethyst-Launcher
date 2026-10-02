@@ -16,7 +16,7 @@
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "test": "node --test --disable-warning=MODULE_TYPELESS_PACKAGE_JSON \"test/**/*.test.ts\"",
     "start": "electron-vite preview",
-    "dev": "electron-vite dev",
+    "dev": "electron-vite dev --watch",
     "register-protocol": "bash scripts/register-protocol-dev.sh",
     "build": "npm run typecheck && electron-vite build",
     "postinstall": "electron-builder install-app-deps",
@@ -106,5 +106,10 @@
         "icon": "src/renderer/src/assets/icons/icon.ico"
       }
     ]
+  },
+  "allowScripts": {
+    "electron@41.2.0": true,
+    "esbuild@0.25.12": true,
+    "esbuild@0.27.3": true
   }
 }

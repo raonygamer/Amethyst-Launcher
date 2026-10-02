@@ -1,9 +1,11 @@
 import { XVDTool } from "./XVDTool";
-import { UMULauncher } from "./UMULauncher";
+import { Xodus } from "./Xodus";
 import { GDKProton } from "./GDKProton";
+import { UMULauncher } from "./UMULauncher";
 
 export const LauncherTools = {
     XVDTool: new XVDTool(),
-    UMULauncher: new UMULauncher(),
-    GDKProton: new GDKProton()
+    Xodus: new Xodus(),
+    GDKProton: new GDKProton(),
+    UMULauncher: new UMULauncher()
 }

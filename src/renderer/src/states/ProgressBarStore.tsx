@@ -3,7 +3,16 @@ import { log } from "@renderer/scripts/LauncherLog";
 import { SetStateAction, StateUtils } from "./StateUtils";
 import { create } from "zustand";
 
+export interface ProgressTask {
+    id: number;
+    currentStatus: AppStatusType;
+    message: string;
+    progress: number;
+    show: boolean;
+}
+
 interface ProgressBarState {
+    tasks: readonly ProgressTask[];
     busy: boolean;
     currentStatus: AppStatusType;
     message: string;
@@ -33,16 +42,30 @@ export const FULL_PROGRESS_RESET_OPTIONS: ProgressResetOptions = {
     show: true
 }
 
+let lastProgressMessage = "";
+let lastProgressLogTime = 0;
+
+/** Keep task details in the console without logging every byte counter or elapsed second. */
+function logProgressMessage(message: string, flush = false): void {
+    const text = message.replace(/ \(\d+m \d+s elapsed\)$/, "");
+    if (!text || text === lastProgressMessage) return;
+    const now = Date.now();
+    if (!flush && now - lastProgressLogTime < 1000) return;
+    lastProgressMessage = text;
+    lastProgressLogTime = now;
+    log("Progress", text);
+}
+
 export class ProgressBar {
     private static state = create<ProgressBarState>((set) => ({
+        tasks: [],
         busy: false,
         currentStatus: "idle",
         message: "",
         progress: 0,
         show: false,
 
-        // Status is the coarse state that gates launching, downloading and dropping files, so
-        // each transition is recorded. Message and progress are not: they change per chunk.
+        // Status gates other tasks. Message logging is throttled; numeric progress is not logged.
         setStatus(status) {
             set((state) => {
                 const next = StateUtils.resolveSetStateAction(status, state.currentStatus);
@@ -51,9 +74,11 @@ export class ProgressBar {
             });
         },
         setMessage(message) {
-            set((state) => ({
-                message: StateUtils.resolveSetStateAction(message, state.message)
-            }));
+            set((state) => {
+                const next = StateUtils.resolveSetStateAction(message, state.message);
+                if (next !== state.message) logProgressMessage(next);
+                return { message: next };
+            });
         },
         setProgress(progress) {
             set((state) => ({
@@ -94,68 +119,87 @@ export class ProgressBar {
         return selector ? this.state(selector) : this.state();
     }
 
-    /**
-     * The first caller in owns the bar; anyone who joins while it is busy (a nested
-     * decrypt, or an unrelated download) shares that lifecycle. The bar is released
-     * once the owner *and* every joiner has finished, on the owner's reset terms.
-     */
-    private static owner: symbol | null = null;
-    private static ownerReset: ProgressResetOptions = FULL_PROGRESS_RESET_OPTIONS;
-    private static participants = 0;
+    private static nextId = 0;
+    private static active = new Map<number, ProgressTask>();
+    private static ownerReset = FULL_PROGRESS_RESET_OPTIONS;
 
-    private static enter(showProgressBar: boolean, resetOptions: ProgressResetOptions): void {
-        if (this.owner === null) {
-            this.owner = Symbol("progress-owner");
-            this.ownerReset = resetOptions;
-            this.getState().update({ busy: true, show: showProgressBar, progress: 0, message: "" });
-        }
-        this.participants++;
-    }
-
-    private static leave(): void {
-        this.participants = Math.max(0, this.participants - 1);
-        if (this.participants > 0) return;
-
-        const resetOptions = this.ownerReset;
-        this.owner = null;
-        this.ownerReset = FULL_PROGRESS_RESET_OPTIONS;
-        this.applyReset(resetOptions);
-    }
-
-    static run(callback: (state: ProgressBarState) => void, showProgressBar: boolean = true, resetOptions: ProgressResetOptions = FULL_PROGRESS_RESET_OPTIONS): void {
-        this.enter(showProgressBar, resetOptions);
-        try {
-            callback(this.getState());
-        } finally {
-            this.leave();
-        }
-    }
-
-    static async runAsync(callback: (state: ProgressBarState) => Promise<void>, showProgressBar: boolean = true, resetOptions: ProgressResetOptions = FULL_PROGRESS_RESET_OPTIONS): Promise<void> {
-        this.enter(showProgressBar, resetOptions);
-        try {
-            await callback(this.getState());
-        } finally {
-            this.leave();
-        }
-    }
-
-    private static applyReset(resetOptions: ProgressResetOptions): void {
-        const state = this.getState();
-        const updates: Partial<Pick<ProgressBarState, "busy" | "currentStatus" | "message" | "progress" | "show">> = {
-            busy: false,
+    /** Each operation owns its setters, including nested or overlapping operations. */
+    private static enter(show: boolean, reset: ProgressResetOptions): ProgressBarState {
+        if (this.active.size === 0) this.ownerReset = reset;
+        const task: ProgressTask = { id: ++this.nextId, currentStatus: "other", message: "", progress: 0, show };
+        this.active.set(task.id, task);
+        let lastMessage = "";
+        let lastLog = 0;
+        const update = (partial: Partial<ProgressTask>): void => {
+            if (!this.active.has(task.id)) return;
+            Object.assign(task, partial);
+            if (partial.message !== undefined) {
+                const message = task.message.replace(/ \(\d+m \d+s elapsed\)$/, "");
+                if (message && message !== lastMessage && Date.now() - lastLog >= 1000) {
+                    log("Progress", message);
+                    lastMessage = message;
+                    lastLog = Date.now();
+                }
+            }
+            this.publish(task);
         };
-        if (resetOptions.status) updates.currentStatus = "idle";
-        if (resetOptions.message) updates.message = "";
-        if (resetOptions.progress) updates.progress = 0;
-        if (resetOptions.show) updates.show = false;
-        state.update(updates);
+        this.publish(task);
+        return {
+            ...this.getState(),
+            get currentStatus() { return task.currentStatus; },
+            get message() { return task.message; },
+            get progress() { return task.progress; },
+            get show() { return task.show; },
+            setStatus: status => update({ currentStatus: status }),
+            setMessage: value => update({ message: StateUtils.resolveSetStateAction(value, task.message) }),
+            setProgress: value => update({ progress: StateUtils.resolveSetStateAction(value, task.progress) }),
+            setShow: value => update({ show: StateUtils.resolveSetStateAction(value, task.show) }),
+            update: partial => update(partial),
+            reset: () => update({ currentStatus: "idle", message: "", progress: 0, show: false }),
+            // Captured ID is intentionally private to this lifecycle.
+            taskId: task.id,
+        } as ProgressBarState & { taskId: number };
+    }
+
+    private static publish(focus?: ProgressTask): void {
+        const tasks = [...this.active.values()].map(task => ({ ...task }));
+        const current = focus?.show ? focus : [...tasks].reverse().find(task => task.show) ?? tasks.at(-1);
+        this.state.setState({ tasks, busy: tasks.length > 0,
+            ...(current ? { currentStatus: current.currentStatus, message: current.message,
+                progress: current.progress, show: tasks.some(task => task.show) } : {}),
+        });
+    }
+
+    private static leave(context: ProgressBarState): void {
+        const id = (context as ProgressBarState & { taskId: number }).taskId;
+        const task = this.active.get(id);
+        if (!task) return;
+        if (task.message) log("Progress", task.message);
+        this.active.delete(id);
+        this.publish();
+        if (this.active.size > 0) return;
+        const reset = this.ownerReset;
+        this.getState().update({ busy: false,
+            ...(reset.status ? { currentStatus: "idle" as const } : {}),
+            ...(reset.message ? { message: "" } : {}),
+            ...(reset.progress ? { progress: 0 } : {}),
+            ...(reset.show ? { show: false } : {}),
+        });
+    }
+
+    static run(callback: (state: ProgressBarState) => void, show = true, resetOptions = FULL_PROGRESS_RESET_OPTIONS): void {
+        const context = this.enter(show, resetOptions);
+        try { callback(context); } finally { this.leave(context); }
+    }
+
+    static async runAsync(callback: (state: ProgressBarState) => Promise<void>, show = true, resetOptions = FULL_PROGRESS_RESET_OPTIONS): Promise<void> {
+        const context = this.enter(show, resetOptions);
+        try { await callback(context); } finally { this.leave(context); }
     }
 
     static reset(): void {
-        this.owner = null;
-        this.ownerReset = FULL_PROGRESS_RESET_OPTIONS;
-        this.participants = 0;
+        // A caller finishing or failing cannot erase unrelated work still in progress.
+        if (this.active.size > 0) { this.publish(); return; }
         this.getState().reset();
     }
 
@@ -170,8 +214,8 @@ export class ProgressBar {
 
     static canDoAction(actionType: ActionType): boolean {
         const state = this.getState();
-        const blockedActions = BLOCKED_ACTIONS[state.currentStatus] || [];
-        return !blockedActions.includes(actionType);
+        const statuses = state.tasks.length ? state.tasks.map(task => task.currentStatus) : [state.currentStatus];
+        return statuses.every(status => !BLOCKED_ACTIONS[status].includes(actionType));
     }
 
     /**
@@ -179,8 +223,7 @@ export class ProgressBar {
      * so the calling component re-renders when the answer flips.
      */
     static useCanDoAction(actionType: ActionType): boolean {
-        const status = this.useState(s => s.currentStatus);
-        const blockedActions = BLOCKED_ACTIONS[status] || [];
-        return !blockedActions.includes(actionType);
+        return this.useState(state => (state.tasks.length ? state.tasks.map(task => task.currentStatus) : [state.currentStatus])
+            .every(status => !BLOCKED_ACTIONS[status].includes(actionType)));
     }
 }

@@ -2,10 +2,11 @@ import { describeError } from "@shared/diagnostics/Log";
 import { HeadResponse, NET_HEAD } from "@shared/net/DownloadIpc";
 import { SemVersion } from "@renderer/scripts/classes/SemVersion";
 import { Channel } from "@renderer/scripts/domain/Channel";
+import { automaticVersionChannel } from "@renderer/scripts/domain/AutomaticVersion";
 import { errnoCode } from "@renderer/scripts/Directories";
 import { FileLocker } from "@renderer/scripts/FileLocker";
 import { log } from "@renderer/scripts/LauncherLog";
-import { CIK_KEYS } from "@renderer/scripts/backend/Decryption";
+import { gameLicenceKeys, requireDownloadAccount, requireDownloadLicence } from "@renderer/scripts/backend/Decryption";
 import { Downloader, PART_SUFFIX } from "@renderer/scripts/backend/Downloader";
 import { LauncherTools } from "@renderer/scripts/backend/tools/LauncherTools";
 import { LauncherPaths } from "@renderer/scripts/platform/LauncherPlatform";
@@ -221,7 +222,7 @@ export class VersionService {
         if (!VersionService.wasBeingDecrypted(msixvc)) {
             log(
                 "Versions",
-                `Keeping ${msixvc} (${await VersionService.sizeOf(msixvc)}): the decrypt of ${label} never started, `
+                `Keeping ${msixvc} (${await VersionService.sizeOf(msixvc)}): decryption did not modify ${label}, `
                 + `so the downloaded archive is still good`
             );
             return;
@@ -235,16 +236,35 @@ export class VersionService {
         await VersionService.clearDecryptMarker(msixvc);
     }
 
+    private static async archiveState(file: string): Promise<string | null> {
+        try {
+            const stat = await fs.promises.stat(file, { bigint: true });
+            return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+        } catch { return null; }
+    }
+
     private async decryptAndExtract(msixvc: string, folder: string, label: string): Promise<void> {
         await ProgressBar.runAsync(async ({ setStatus, setMessage, setProgress }) => {
+            setStatus("other");
+            setMessage(`Obtaining game licence for ${label}...`);
+            const cikKeys = await gameLicenceKeys(msixvc, this.paths.amethystPath);
             await LauncherTools.XVDTool.check();
+            const original = await VersionService.archiveState(msixvc);
             await VersionService.markDecryptStarted(msixvc);
 
             setStatus("decrypting");
             setMessage(`Decrypting ${label}...`);
             setProgress(0.5);
             log("Versions", `Decrypting ${msixvc} (${await VersionService.sizeOf(msixvc)}) for ${label}`);
-            await LauncherTools.XVDTool.decryptFile(msixvc, CIK_KEYS, false);
+            try {
+                await LauncherTools.XVDTool.decryptFile(msixvc, cikKeys, false);
+            } catch (error) {
+                if (original !== null && await VersionService.archiveState(msixvc) === original) {
+                    await VersionService.clearDecryptMarker(msixvc);
+                    log("Versions", `Decryption failed without modifying ${msixvc}; keeping it for retry`);
+                }
+                throw error;
+            }
 
             setStatus("extracting");
             setMessage(`Extracting ${label}...`);
@@ -301,6 +321,7 @@ export class VersionService {
         fs.mkdirSync(this.paths.versionsPath, { recursive: true });
 
         return this.withLock(lockName, label, async () => {
+            await requireDownloadAccount();
             const mirror = await fastestMirror(catalogVersion.urls);
             const chosen = await head(mirror);
             if (chosen.error !== null) {
@@ -315,6 +336,11 @@ Check your internet connection and try again.`
                 log("Versions", `HEAD on the chosen mirror ${mirror} returned ${chosen.status} ${chosen.statusText}`);
                 throw new Error(`Download mirror returned ${chosen.status} for ${label}`);
             }
+            if (window.process.platform === "linux") await ProgressBar.runAsync(async ({ setStatus, setMessage }) => {
+                setStatus("other");
+                setMessage(`Checking the Xodus licence for ${label}...`);
+                await requireDownloadLicence(mirror, this.paths.amethystPath);
+            });
             const expectedSize = chosen.contentLength;
 
             if (VersionService.wasBeingDecrypted(msixvc)) {
@@ -349,7 +375,7 @@ Check your internet connection and try again.`
                             setMessage(`Downloading ${label}... (${mb(transferred)} / ${mb(total)})`);
                             setProgress(progress);
                             useDownloadStore.getState().updateDownload(downloadId, { progress });
-                        }, abortController.signal);
+                        }, abortController.signal, { downloadId });
                     });
                 } catch (e) {
                     log(
@@ -448,6 +474,7 @@ Check your internet connection and try again.`
         fs.mkdirSync(this.paths.versionsPath, { recursive: true });
 
         return this.withLock(lockName, request.label, async () => {
+            await requireDownloadAccount();
             await ProgressBar.runAsync(async ({ setMessage, setProgress }) => {
                 setMessage(`Copying ${path.basename(request.file)}...`);
                 setProgress(0.5);
@@ -517,6 +544,14 @@ Check your internet connection and try again.`
 
     /** Resolves a profile's version, downloading it if the catalog knows it but disk doesn't. */
     async resolveOrInstall(versionUuid: string): Promise<InstalledVersion> {
+        const automaticChannel = automaticVersionChannel(versionUuid);
+        if (automaticChannel) {
+            await this.catalog.refresh({ force: true, allowStale: false });
+            const latest = this.catalog.latest(automaticChannel);
+            if (!latest) throw new Error(`No ${automaticChannel} versions are available in the version database.`);
+            log("Versions", `${versionUuid} resolved to ${catalogLabel(latest)} (${latest.uuid}) after checking for updates`);
+            return this.install(latest);
+        }
         const installed = this.library.byUuid(versionUuid);
         if (installed && await this.stillOnDisk(installed)) {
             log("Versions", `${versionUuid} resolves to the installed "${installed.label}" at ${installed.path}`);

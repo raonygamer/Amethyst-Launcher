@@ -1,3 +1,4 @@
+import { parseProfileEnvironment } from "@renderer/scripts/domain/ProfileEnvironment";
 import { describeError } from "@shared/diagnostics/Log";
 import { AppStatusType } from "@renderer/scripts/AppStatus";
 import { Profile, isModded } from "@renderer/scripts/domain/Profile";
@@ -161,6 +162,7 @@ export async function launchProfile(profile: Profile): Promise<LaunchOutcome> {
 }
 
 async function runLaunch(profile: Profile): Promise<LaunchOutcome> {
+    parseProfileEnvironment(profile.environmentVariables);
     // Once before the version, so a profile that cannot start says so instead of downloading
     // several gigabytes first, and once after it, because a download runs for minutes and the
     // mods the first pass named may have been uninstalled or replaced in the meantime.

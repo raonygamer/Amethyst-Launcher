@@ -1,3 +1,4 @@
+import { readLinuxToolSettings, DEFAULT_LINUX_TOOL_SETTINGS, type LinuxToolSettings } from "@shared/linux/LinuxToolSettings";
 import { create } from "zustand";
 
 import { describeError, userMessage } from "@shared/diagnostics/Log";
@@ -7,6 +8,8 @@ import { GetAllMods, ValidatedMod } from "@renderer/scripts/Mods";
 import { ProfileStore } from "@renderer/scripts/ProfileStore";
 import { CHANNELS } from "@renderer/scripts/domain/Channel";
 import { Profile } from "@renderer/scripts/domain/Profile";
+import { automaticVersionChannel } from "@renderer/scripts/domain/AutomaticVersion";
+import { installedProfileVersion } from "@renderer/scripts/domain/ProfileVersion";
 import { ILauncherPlatform } from "@renderer/scripts/platform/LauncherPlatform";
 import { WindowsLauncherPlatform } from "@renderer/scripts/platform/WindowsLauncherPlatform";
 import { LinuxLauncherPlatform } from "@renderer/scripts/platform/LinuxLauncherPlatform";
@@ -57,6 +60,9 @@ interface AppStore {
 
     keepLauncherOpen: boolean;
     setKeepLauncherOpen: StateSetter<boolean>;
+
+    linuxToolSettings: LinuxToolSettings;
+    setLinuxToolSettings: (settings: LinuxToolSettings) => void;
 
     developerMode: boolean;
     setDeveloperMode: StateSetter<boolean>;
@@ -117,6 +123,8 @@ export const useAppStore = create<AppStore>((set, get) => {
         editingProfileUuid: null,
         UITheme: "System",
         keepLauncherOpen: true,
+        linuxToolSettings: { ...DEFAULT_LINUX_TOOL_SETTINGS },
+        setLinuxToolSettings: settings => { set({ linuxToolSettings: settings }); get().saveData(); },
         developerMode: false,
         error: "",
         downloadingMods: [],
@@ -124,7 +132,10 @@ export const useAppStore = create<AppStore>((set, get) => {
 
         setProfiles: value => set(state => ({ profiles: StateUtils.resolveSetStateAction(value, state.profiles) })),
 
-        refreshInstalledVersions: () => set({ installedVersions: [...versions.library.list()] }),
+        refreshInstalledVersions: () => {
+            set({ installedVersions: [...versions.library.list()] });
+            if (writeGate === "open") get().profileStore.syncShortcuts(get().profiles);
+        },
 
         setLastLaunchedProfileUuid: uuid => {
             const previous = get().lastLaunchedProfileUuid;
@@ -217,6 +228,7 @@ export const useAppStore = create<AppStore>((set, get) => {
             const config: LauncherConfig = {
                 keep_open: state.keepLauncherOpen,
                 ui_theme: state.UITheme,
+                linux_tools: state.linuxToolSettings,
                 developer_mode: state.developerMode,
                 last_launched_profile_uuid: state.lastLaunchedProfileUuid,
             };
@@ -225,7 +237,10 @@ export const useAppStore = create<AppStore>((set, get) => {
 
         platform,
         versions,
-        profileStore: new ProfileStore(paths.profilesFilePath),
+        profileStore: new ProfileStore(paths.profilesFilePath, profile => {
+            const channel = automaticVersionChannel(profile.versionUuid);
+            return installedProfileVersion(profile, versions.library.list(), channel ? versions.catalog.latest(channel)?.uuid : undefined);
+        }),
         fileLocker: FileLocker.create(),
     };
 });
@@ -254,6 +269,7 @@ async function hydrate(): Promise<void> {
     useAppStore.setState({
         profiles,
         keepLauncherOpen: config.keep_open,
+        linuxToolSettings: readLinuxToolSettings(config.linux_tools),
         developerMode: config.developer_mode,
         UITheme: config.ui_theme,
         lastLaunchedProfileUuid: config.last_launched_profile_uuid,
@@ -287,6 +303,9 @@ async function hydrate(): Promise<void> {
     }
 }
 
+let resolveAppReady: (ready: boolean) => void;
+export const appStateReady = new Promise<boolean>(resolve => { resolveAppReady = resolve; });
+
 export function initializeAppState(): void {
     ipcRenderer.removeAllListeners("APP_STATE_INIT");
     ipcRenderer.on("APP_STATE_INIT", async () => {
@@ -301,8 +320,10 @@ export function initializeAppState(): void {
                 `Startup failed while ${hydratePhase}: ${userMessage(e)}. `
                 + "Nothing you change will be saved until this is fixed, so your files stay as they are."
             );
+            resolveAppReady(false);
             return;
         }
+        resolveAppReady(true);
         resumePendingDownloads();
     });
     log("AppStore", "Asking the main process for APP_STATE_INIT");

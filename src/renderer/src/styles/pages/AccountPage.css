@@ -1,0 +1,238 @@
+.app-account-button {
+    flex-shrink: 0;
+    text-decoration: none;
+}
+
+.app-account-avatar {
+    position: relative;
+    width: 28px;
+    height: 28px;
+}
+
+.account-avatar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.25);
+    border-radius: 50%;
+    color: var(--color-text-dim);
+    overflow: hidden;
+}
+
+.account-avatar img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.account-avatar svg {
+    width: 75%;
+    height: 75%;
+}
+
+.account-connection-dot {
+    display: inline-block;
+    flex-shrink: 0;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: var(--color-text-muted);
+}
+
+.account-connection-dot--connected {
+    background-color: var(--color-confirm-light);
+}
+
+.app-account-avatar > .account-connection-dot {
+    position: absolute;
+    right: -2px;
+    bottom: -2px;
+    width: 10px;
+    height: 10px;
+    border: 2px solid var(--color-surface-sunken);
+}
+
+.account-page {
+    height: 100%;
+    min-width: 0;
+    padding: 18px 20px 32px;
+    overflow: auto;
+    border: 3px solid rgba(255, 255, 255, 0.08);
+    background-color: rgba(10, 13, 18, 0.62);
+    backdrop-filter: blur(14px);
+    color: var(--color-text);
+}
+
+.account-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 20px;
+}
+
+.account-title {
+    margin: 0;
+    font-size: 20px;
+}
+
+.account-subtitle {
+    margin: 6px 0 0;
+    font-size: 12px;
+    color: var(--color-text-muted);
+}
+
+.account-refresh {
+    flex-shrink: 0;
+    height: 34px;
+    padding: 4px 12px;
+    border: 2px solid rgba(255, 255, 255, 0.12);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), inset 0 -2px 0 rgba(0, 0, 0, 0.2);
+    background-color: rgba(0, 0, 0, 0.3);
+    color: var(--color-text);
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.account-refresh:hover:not(:disabled) {
+    background-color: rgba(255, 255, 255, 0.12);
+}
+
+.account-refresh:disabled {
+    cursor: default;
+    opacity: 0.5;
+}
+
+.account-login {
+    margin-top: 20px;
+}
+
+.account-card {
+    max-width: 720px;
+    padding: 20px;
+    border: 2px solid rgba(255, 255, 255, 0.08);
+    background-color: rgba(0, 0, 0, 0.22);
+}
+
+.account-profile {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    margin-bottom: 24px;
+}
+
+.account-profile > .account-avatar {
+    flex-shrink: 0;
+    width: 76px;
+    height: 76px;
+    border: 2px solid rgba(255, 255, 255, 0.12);
+    background-color: rgba(0, 0, 0, 0.25);
+}
+
+.account-profile-heading {
+    min-width: 0;
+}
+
+.account-gamertag {
+    margin: 0 0 8px;
+    font-size: 22px;
+    overflow-wrap: anywhere;
+}
+
+.account-profile-status {
+    font-size: 13px;
+    color: var(--color-text-dim);
+}
+
+.account-details {
+    display: flex;
+    flex-direction: column;
+    margin: 0;
+    gap: 18px;
+    font-size: 13px;
+}
+
+.account-detail {
+    display: grid;
+    grid-template-columns: 110px minmax(0, 1fr);
+    gap: 8px;
+}
+
+.account-detail dt {
+    color: var(--color-text-muted);
+}
+
+.account-detail dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.account-email,
+.account-gamertag {
+    user-select: text;
+}
+
+.account-detail-note {
+    margin: 7px 0 0;
+    color: var(--color-text-muted);
+    font-size: 12px;
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+}
+
+.account-session-detail {
+    margin-top: 20px;
+}
+
+.account-service-status {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.account-error {
+    margin: 16px 0 0;
+    color: var(--color-danger-text);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+
+.account-updated {
+    margin-top: 14px;
+    color: var(--color-text-muted);
+    font-size: 11px;
+}
+
+@media (max-width: 680px) {
+    .account-page {
+        padding: 12px 12px 28px;
+    }
+
+    .account-card {
+        padding: 14px;
+    }
+
+    .account-detail {
+        grid-template-columns: 1fr;
+        gap: 5px;
+    }
+}
+
+@media (max-height: 480px) {
+    .app-navbar--linux .app-nav-links {
+        gap: 4px;
+    }
+
+    .app-navbar--linux .nav-icon,
+    .app-navbar--linux .app-logs-button,
+    .app-navbar--linux .app-settings-button,
+    .app-navbar--linux .download-manager-btn {
+        height: 36px;
+    }
+
+    .app-navbar--linux .app-nav-icon-image {
+        object-fit: contain;
+    }
+}

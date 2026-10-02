@@ -1,8 +1,11 @@
+import { parseProfileEnvironment } from "@renderer/scripts/domain/ProfileEnvironment";
 import { log } from "@renderer/scripts/LauncherLog";
 import { PathUtils } from "@renderer/scripts/PathUtils";
 import { SESSION_SCHEMA, writeSession } from "@renderer/scripts/session/Session";
 import { LauncherTools } from "@renderer/scripts/backend/tools/LauncherTools";
 import { describeError } from "@shared/diagnostics/Log";
+import { showOnlineFeaturesWarning } from "@renderer/popups/OnlineFeaturesWarningPopup";
+import { useXodusAccountStore } from "@renderer/states/XodusAccountStore";
 import { DIRECTORY_PATHS, FILE_PATHS, ILauncherPlatform, LauncherPaths, LaunchOutcome, LaunchRequest, ProcessInfo } from "./LauncherPlatform";
 
 const fs = window.require("fs") as typeof import("fs");
@@ -55,7 +58,7 @@ export class LinuxLauncherPlatform implements ILauncherPlatform {
     }
 
     /** One line for the whole /proc sweep: a per-pid line would be hundreds of them. */
-    private async listProcesses(executableName: string): Promise<ProcessInfo[]> {
+    private async listProcesses(executableName: string, prefix: string): Promise<ProcessInfo[]> {
         const found: ProcessInfo[] = [];
         let scanned = 0;
         let unreadable = 0;
@@ -64,9 +67,13 @@ export class LinuxLauncherPlatform implements ILauncherPlatform {
             if (!/^\d+$/.test(pid)) continue;
             scanned += 1;
             try {
+                const args = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0");
+                if (!args.some(arg => arg.replace(/\\/g, "/").split("/").pop()?.toLowerCase() === executableName.toLowerCase())) continue;
+                const environment = fs.readFileSync(`/proc/${pid}/environ`, "utf8").split("\0");
+                if (!environment.includes(`WINEPREFIX=${prefix}`)) continue;
                 const cwd = fs.readlinkSync(`/proc/${pid}/cwd`);
                 const executablePath = path.join(cwd, executableName);
-                if (fs.existsSync(executablePath)) found.push({ pid: parseInt(pid, 10), executablePath });
+                found.push({ pid: parseInt(pid, 10), executablePath });
             } catch {
                 // Exited mid-scan, or belongs to another user. Counted, never listed.
                 unreadable += 1;
@@ -132,13 +139,20 @@ export class LinuxLauncherPlatform implements ILauncherPlatform {
         );
 
         status("Checking whether this profile is running...");
-        const running = await this.listProcesses(GAME_EXECUTABLE);
-        const own = running.find(p => p.executablePath.startsWith(prefix));
+        const running = await this.listProcesses(GAME_EXECUTABLE, prefix);
+        const own = running[0];
         if (own) {
             log("Launch", `Refusing to launch "${profile.name}": pid ${own.pid} already runs from its prefix ${prefix}`);
             throw new Error(`"${profile.name}" is already running.`);
         }
 
+        await LauncherTools.Xodus.ensureVerified();
+        await useXodusAccountStore.getState().refresh();
+        const account = useXodusAccountStore.getState().snapshot;
+        if (account?.service === "disconnected" && account.session === "unavailable") {
+            status("Waiting for online features warning confirmation...");
+            if (!await showOnlineFeaturesWarning()) throw new Error("Launch cancelled.");
+        }
         fs.mkdirSync(path.join(prefix, "dosdevices"), { recursive: true });
 
         writeSession(dataDir, {
@@ -155,9 +169,7 @@ export class LinuxLauncherPlatform implements ILauncherPlatform {
         log("Launch", `Session file written to ${dataDir} for "${profile.name}"`);
 
         status("Starting Minecraft...");
-        await LauncherTools.UMULauncher.runGame(path.join(version.path, GAME_EXECUTABLE), {
-            WINEPREFIX: prefix,
-        });
+        await LauncherTools.UMULauncher.runGame(path.join(version.path, GAME_EXECUTABLE), { ...parseProfileEnvironment(profile.environmentVariables), WINEPREFIX: prefix });
         log("Launch", `"${profile.name}" is running`);
 
         // Each profile has its own prefix, so no other way of starting the game can reach this
