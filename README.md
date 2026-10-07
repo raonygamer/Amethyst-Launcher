@@ -41,11 +41,13 @@ downloads, imports, licence retrieval and account login check Xodus. These actio
 verify tools that have not succeeded yet, and share an in-progress verification rather than starting
 duplicate builds. Settings can explicitly repeat verification for each tool. Xodus checks for source updates and builds a newer revision when available.
 
-Setup also enables `xodus-service` as the user service `amethyst-xodus.service`. It starts on
-login and restarts after exiting, inheriting your desktop session’s `HOME` and
-`XDG_RUNTIME_DIR`. Account IPC uses `$XDG_RUNTIME_DIR/xodus.sock`. On desktops without a
-working systemd user manager, setup uses desktop autostart with a restart loop instead.
-Setup verifies that the service opens `~/.amethyst/runtime/xodus.sock` before reporting success.
+The launcher starts the installed `xodus-service` when it opens, or reuses an existing
+listener at `$XDG_RUNTIME_DIR/xodus.sock`. It requests the desktop keyring's native unlock
+dialog before starting Xodus. Missing or unavailable keyrings are reported without a restart
+loop. Xodus runs detached and survives launcher exit; the next launcher reuses it. Previous
+Amethyst systemd/autostart entries are disabled and retained as backups during migration.
+The daemon inherits the desktop session's `HOME` and `XDG_RUNTIME_DIR`; its log is
+`~/.amethyst/xodus-service.log`. Settings verification and manual account refresh can retry startup.
 
 Linux launches use UMU with ProtonGDK and each profile's `~/.amethyst/launcher/profile_data/<profile UUID>/prefix`. UMU/Proton manages prefix setup. Game launches inherit the session environment without launcher overrides for `HOME` or `XDG_RUNTIME_DIR`. The launcher waits for acknowledgment of the online-features warning when both Xodus and its account session are unavailable. Game output remains available in Console.
 
@@ -75,7 +77,7 @@ the main process.
 
 Automatic account/profile refreshes run hourly and reuse an in-memory cache. **Refresh** forces a real request. **Log out of Xodus** calls `xodus-cli logout`; successful login/logout clears cached account data and refreshes immediately. Profile rate limits are shown explicitly, with automatic retries backed off while the last known avatar stays visible for the same account.
 
-On Linux, the launcher reads a small XVD header and asks `xodus-cli license` for its content licence before downloading the full game. Decryption obtains the licence again. A Xodus entitlement denial shows an ownership error; connection failures remain separate errors. Windows continues using its existing keys.
+On Linux, the launcher reads a small XVD header and asks `xodus-cli license` for its content licence before downloading the full game. Decryption obtains the licence again. Transport and response-decoding failures are retried once, with partial keys discarded before retrying. Only an explicit Xodus entitlement denial shows an ownership error; keyring, authentication, rate-limit, and connection failures have separate messages without exposing credentials. Windows continues using its existing keys.
 
 If the account is unavailable, select **Log in with Xodus** to open the installed `xodus-cli login`
 window. It uses the same Amethyst home and runtime directories as the service. Account status

@@ -15,6 +15,7 @@ const compiled = await build({
     external: [
         "electron", "electron-updater", "@electron-toolkit/utils",
         "./diagnostics/LogWriter", "./linux/XodusAccount", "./linux/XodusLogin",
+        "./linux/XodusDaemon", "./linux/XodusKeyring",
         "./net/DownloadService", "./protocol/IconProtocol",
     ],
 });
@@ -70,6 +71,8 @@ function startMain(platform: NodeJS.Platform, dev = false, failAccount = false):
         "./diagnostics/LogWriter": { discardRun: (): void => {}, mainLog: (...args: unknown[]): void => { logs.push(args); } },
         "./net/DownloadService": { registerDownloadIpc: (): void => {} },
         "./protocol/IconProtocol": { registerIconScheme: (): void => {}, serveIcons: (): void => {} },
+        "./linux/XodusDaemon": { createXodusDaemon: () => ({ ensureRunning: async () => {} }) },
+        "./linux/XodusKeyring": { unlockXodusKeyring: async () => {}, KeyringUnlockError: class extends Error {} },
         "./linux/XodusAccount": {
             getXodusAccountSnapshot: Object.assign(async (force: boolean): Promise<XodusAccountSnapshot> => {
                 forced.push(force);

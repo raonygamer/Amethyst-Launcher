@@ -53,7 +53,7 @@ it("resolves automatic profiles anew, keeps release and preview separate, and pr
         "@renderer/scripts/LauncherLog": "export const log=()=>{};",
         "@renderer/scripts/Directories": "export const errnoCode=()=>null;",
         "@renderer/scripts/FileLocker": "export const FileLocker={};",
-        "@renderer/scripts/backend/Decryption": "export const gameLicenceKeys=async()=>({});export const requireDownloadAccount=async()=>{};",
+        "@renderer/scripts/backend/Decryption": "export const gameLicenceKeys=async()=>({});export const requireDownloadAccount=async()=>{};export const requireDownloadLicence=async()=>{};",
         "@renderer/scripts/backend/Downloader": "export const Downloader={};export const PART_SUFFIX='.part';",
         "@renderer/scripts/backend/tools/LauncherTools": "export const LauncherTools={};",
         "@renderer/states/ProgressBarStore": "export const ProgressBar={};export const FULL_PROGRESS_RESET_OPTIONS={};",

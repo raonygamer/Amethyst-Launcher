@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { it } from "node:test";
 import { build } from "esbuild";
-import { XODUS_ACCOUNT_LOGOUT, XODUS_ACCOUNT_LOGIN, XODUS_ACCOUNT_REFRESH, type XodusAccountSnapshot, type XodusLoginResult } from "../src/shared/linux/XodusAccountTypes.ts";
+import { XODUS_ACCOUNT_LOGOUT, XODUS_ACCOUNT_LOGIN, XODUS_ACCOUNT_REFRESH, XODUS_RESTART, XODUS_ACCOUNT_LIBRARY, type XboxOwnedGames, type XodusAccountSnapshot, type XodusLoginResult } from "../src/shared/linux/XodusAccountTypes.ts";
 
 const root = path.resolve(import.meta.dirname, "..");
 const compiled = await build({
@@ -24,10 +24,30 @@ const account: XodusAccountSnapshot = {
     detail: null, emailDetail: null,
 };
 
+it("coalesces restart clicks, blocks conflicting actions, and performs a real account refresh afterward", async () => {
+    const { useXodusAccountStore: store, calls } = setup();
+    const restart = store.getState().restart();
+    assert.equal(store.getState().restart(), restart);
+    assert.equal(store.getState().restarting, true);
+    await store.getState().login();
+    await store.getState().refresh();
+    await new Promise(setImmediate);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].channel, XODUS_RESTART);
+    calls[0].resolve({ ok: true, message: null });
+    await new Promise(setImmediate);
+    assert.equal(calls[1].channel, XODUS_ACCOUNT_REFRESH);
+    assert.equal(calls[1].force, true);
+    calls[1].resolve(account);
+    await restart;
+    assert.equal(store.getState().restarting, false);
+    assert.deepEqual(store.getState().snapshot, account);
+});
+
 interface PendingAccountRead {
     channel: string;
     force?: boolean;
-    resolve(value: XodusAccountSnapshot | XodusLoginResult): void;
+    resolve(value: XodusAccountSnapshot | XodusLoginResult | XboxOwnedGames): void;
     reject(error: Error): void;
 }
 
@@ -46,7 +66,7 @@ function setup(platform = "linux", verifyXodus: () => Promise<void> = async () =
         require: (name: string): unknown => {
             assert.equal(name, "electron");
             assert.equal(platform, "linux", "other platforms must never access account IPC");
-            return { ipcRenderer: { invoke: (channel: string, force?: boolean) => new Promise<XodusAccountSnapshot | XodusLoginResult>((resolve, reject) => calls.push({ channel, force, resolve, reject })) } };
+            return { ipcRenderer: { invoke: (channel: string, force?: boolean) => new Promise<XodusAccountSnapshot | XodusLoginResult | XboxOwnedGames>((resolve, reject) => calls.push({ channel, force, resolve, reject })) } };
         },
         setInterval: (callback: () => void, delay: number) => {
             assert.equal(delay, 60 * 60_000);
@@ -264,4 +284,36 @@ it("logs out once, pauses polling, clears the displayed account and forces a rea
     await pending;
     assert.equal(store.getState().signingOut, false);
     assert.equal(store.getState().snapshot?.session, "unavailable");
+});
+
+
+it("discards an old library when the account changes and forwards a forced library refresh", async () => {
+    const { useXodusAccountStore: store, calls } = setup();
+    store.setState({ snapshot: account });
+    const oldLibrary = store.getState().loadLibrary();
+    await Promise.resolve();
+    assert.equal(calls[0].channel, XODUS_ACCOUNT_LIBRARY);
+    const refresh = store.getState().refresh();
+    await Promise.resolve();
+    calls[1].resolve({ ...account, profile: { ...account.profile!, xuid: "456" } });
+    await refresh;
+    calls[0].resolve({ status: "available", games: [{ id: "old-game", title: "Old account game", productId: null, acquired: null, imageUrl: null }], updatedAt: Date.now(), detail: null });
+    await oldLibrary;
+    assert.equal(store.getState().library, null);
+    const newLibrary = store.getState().loadLibrary(true);
+    await Promise.resolve();
+    assert.equal(calls[2].force, true);
+    calls[2].resolve({ status: "available", games: [], updatedAt: Date.now(), detail: null });
+    await newLibrary;
+    assert.deepEqual(store.getState().library?.games, []);
+});
+
+it("clears owned games after an account lookup fails", async () => {
+    const { useXodusAccountStore: store, calls } = setup();
+    store.setState({ snapshot: account, library: { status: "available", games: [], updatedAt: Date.now(), detail: null } });
+    const refresh = store.getState().refresh();
+    await Promise.resolve();
+    calls[0].reject(new Error("PRIVATE_AUTH_RESPONSE"));
+    await refresh;
+    assert.equal(store.getState().library, null);
 });

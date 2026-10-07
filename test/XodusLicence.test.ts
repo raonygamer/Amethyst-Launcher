@@ -212,14 +212,67 @@ it("redacts licence key bytes echoed by XVDTool from progress, logs and errors",
 
 
 it("reports Xodus entitlement denial specifically without exposing the raw licence response", async () => {
-    const execute: Execute = async (command, args) => ({ command, args, loggableArgs: args, code: 1, timedOut: false, durationMs: 0,
-        stdout: "", stderr: "not entitled to this content: private account data", output: "not entitled to this content: private account data" });
+    let requests = 0;
+    const execute: Execute = async (command, args) => {
+        requests++;
+        return { command, args, loggableArgs: args, code: 1, timedOut: false, durationMs: 0,
+            stdout: "", stderr: "not entitled to this content: private account data", output: "not entitled to this content: private account data" };
+    };
     await assert.rejects(acquireXodusContentCiks("/xodus-cli", contentId, "/data", execute), error => {
         assert(error instanceof Error);
         assert.match(error.message, /does not own Minecraft/);
         assert(!error.message.includes("private account data"));
         return true;
     });
+    assert.equal(requests, 1, "an entitlement denial must not be retried");
+});
+
+it("retries a temporary licence response failure using a fresh private key directory", async () => {
+    const folders: string[] = [];
+    const execute: Execute = async (command, args) => {
+        const folder = args[2];
+        folders.push(folder);
+        assert.deepEqual(await fs.readdir(folder), []);
+        const first = folders.length === 1;
+        if (!first) await assert.rejects(fs.access(folders[0]), "failed keys are removed before retrying");
+        await fs.writeFile(path.join(folder, `${first ? contentId : keyId}.cik`),
+            Buffer.concat([first ? contentBytes : keyIdBytes, key]));
+        return { command, args, loggableArgs: args, code: first ? 1 : 0, timedOut: false, durationMs: 0,
+            stdout: "", stderr: "", output: first ? "request error: error decoding response body: secret-token" : "" };
+    };
+    assert.deepEqual(await acquireXodusContentCiks("/xodus-cli", contentId, "/data", execute), { [keyId]: cikRecord });
+    assert.equal(folders.length, 2);
+    assert.notEqual(folders[0], folders[1]);
+    for (const folder of folders) await assert.rejects(fs.access(folder));
+});
+
+it("limits transient retries and reports safe diagnostics without treating other failures as ownership denials", async () => {
+    const failures = [
+        { output: "request error: error decoding response body", message: /could not read Microsoft's licence response/, attempts: 2 },
+        { output: "request error: error sending request", message: /could not reach Microsoft's licensing service/, attempts: 2 },
+        { output: "Unable to initialize credentials: PlatformFailure", message: /desktop keyring/, attempts: 1 },
+        { output: "request error: HTTP 429 Too Many Requests", message: /rate-limited/, attempts: 1 },
+        { output: "request error: HTTP 401 Unauthorized", message: /Sign in again/, attempts: 1 },
+        { output: "Failed to get exchange MS token", message: /Sign in again/, attempts: 1 },
+        { output: "Failed to auth device", message: /device credentials/, attempts: 1 },
+        { output: "unknown failure", message: /exit 1/, attempts: 1 },
+    ];
+    for (const failure of failures) {
+        const folders: string[] = [];
+        const execute: Execute = async (command, args) => {
+            folders.push(args[2]);
+            return { command, args, loggableArgs: args, code: 1, timedOut: false, durationMs: 0,
+                stdout: "", stderr: "", output: `${failure.output}: secret-token private account data` };
+        };
+        await assert.rejects(acquireXodusContentCiks("/xodus-cli", contentId, "/data", execute), error => {
+            assert(error instanceof Error);
+            assert.match(error.message, failure.message);
+            assert.doesNotMatch(error.message, /secret-token|private account data|does not own Minecraft/);
+            return true;
+        });
+        assert.equal(folders.length, failure.attempts);
+        for (const folder of folders) await assert.rejects(fs.access(folder));
+    }
 });
 
 it("checks the remote content ID through Xodus before a Linux download and skips this on Windows", async () => {

@@ -152,7 +152,7 @@ describe("Xodus account display data", () => {
         assert.deepEqual(JSON.parse(String(calls[1].init.body)).Properties.UserTokens, [USER_TOKEN]);
         assert.equal(new Headers(calls[2].init.headers).get("Authorization"), `XBL3.0 x=123;${XSTS_TOKEN}`);
         assert.equal(new Headers(calls[2].init.headers).get("x-xbl-contract-version"), "2");
-        assert.deepEqual(JSON.parse(String(calls[2].init.body)), { userIds: [XUID], settings: ["Gamertag", "GameDisplayPicRaw"] });
+        assert.deepEqual(JSON.parse(String(calls[2].init.body)), { userIds: [XUID], settings: ["Gamertag", "GameDisplayPicRaw", "Gamerscore", "AccountTier", "TenureLevel"] });
     });
 
     it("does no IPC, keyring or network work on other platforms", async () => {

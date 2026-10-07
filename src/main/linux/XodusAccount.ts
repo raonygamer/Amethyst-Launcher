@@ -1,12 +1,13 @@
+import { requestJson, XboxHttpError } from "./XboxHttp.ts";
+import { fetchOwnedGames } from "./XboxOwnedGames.ts";
 import { execFile } from "node:child_process";
 import { createConnection, type Socket } from "node:net";
 import { homedir } from "node:os";
 import path from "node:path";
-import type { XodusAccountSnapshot } from "../../shared/linux/XodusAccountTypes.ts";
+import type { XodusAccountSnapshot, XboxOwnedGames } from "../../shared/linux/XodusAccountTypes.ts";
 
 const XML_MAGIC = 0x58445358;
 const MAX_PAYLOAD_BYTES = 0xffff;
-const MAX_HTTP_BYTES = 512 * 1024;
 const MSA_REQUEST = "<MSATokenRequest><ClientId>000000004424da1f</ClientId><AllowUi>false</AllowUi><MSAFullTrust>true</MSAFullTrust></MSATokenRequest>";
 const USER_AUTH = "https://user.auth.xboxlive.com/user/authenticate";
 const XSTS_AUTH = "https://xsts.auth.xboxlive.com/xsts/authorize";
@@ -148,63 +149,11 @@ function avatar(value: unknown): string | null {
 const PROFILE_CACHE_MS = 60 * 60_000;
 const PROFILE_BACKOFF_MS = 60 * 60_000;
 
-/** Keep only safe status metadata, never an Xbox error body or authentication headers. */
-class XboxHttpError extends Error {
-    readonly status: number;
-    readonly retryAfter: string | null;
-    constructor(status: number, retryAfter: string | null) {
-        super(`Xbox account lookup returned HTTP ${status}.`);
-        this.status = status;
-        this.retryAfter = retryAfter;
-    }
-}
-
 function retryDelay(value: string | null, now: number): number {
     if (!value) return 0;
     const seconds = Number(value);
     const delay = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(value) - now;
     return Number.isFinite(delay) ? Math.max(0, delay) : 0;
-}
-
-async function requestJson(fetcher: typeof fetch, url: string, body: unknown, auth?: string): Promise<unknown> {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 12_000);
-    try {
-        const response = await fetcher(url, {
-            method: "POST", redirect: "error", signal: controller.signal,
-            headers: {
-                "Content-Type": "application/json", Accept: "application/json",
-                "x-xbl-contract-version": auth ? "2" : "1",
-                ...(auth ? { Authorization: auth } : {}),
-            },
-            body: JSON.stringify(body),
-        });
-        if (!response.ok) {
-            await response.body?.cancel();
-            throw new XboxHttpError(response.status, response.headers.get("retry-after"));
-        }
-        if (Number(response.headers.get("content-length")) > MAX_HTTP_BYTES || !response.body) {
-            await response.body?.cancel();
-            throw new Error("Xbox account lookup failed.");
-        }
-        const reader = response.body.getReader();
-        const chunks: Uint8Array[] = [];
-        let bytes = 0;
-        try {
-            while (true) {
-                const { value, done } = await reader.read();
-                if (done) break;
-                bytes += value.byteLength;
-                if (bytes > MAX_HTTP_BYTES) throw new Error("Xbox account lookup failed.");
-                chunks.push(value);
-            }
-        } finally {
-            await reader.cancel();
-        }
-        return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    } finally {
-        clearTimeout(timeout);
-    }
 }
 
 export interface XodusAccountDependencies {
@@ -218,17 +167,20 @@ export interface XodusAccountDependencies {
 }
 
 /** Main-process only: responses contain display fields, never authentication credentials. */
-export function createXodusAccountReader(overrides: Partial<XodusAccountDependencies> = {}): { (force?: boolean): Promise<XodusAccountSnapshot>; clearCache(): void } {
+export function createXodusAccountReader(overrides: Partial<XodusAccountDependencies> = {}): { (force?: boolean): Promise<XodusAccountSnapshot>; clearCache(): void; ownedGames(force?: boolean): Promise<XboxOwnedGames> } {
     const dependencies: XodusAccountDependencies = {
         platform: process.platform, home: homedir(), runtime: process.env.XDG_RUNTIME_DIR, request: requestXodusMessage,
         fetch: globalThis.fetch, readEmail: readXodusEmail, now: Date.now, ...overrides,
     };
     let inFlight: Promise<XodusAccountSnapshot> | null = null;
-    let cachedProfile: { xuid: string; gamertag: string | null; avatarUrl: string | null; expires: number } | null = null;
+    let cachedProfile: { xuid: string; gamertag: string | null; avatarUrl: string | null; gamerscore?: number; accountTier?: string; tenure?: number; expires: number } | null = null;
+    let libraryCache: { xuid: string; result: XboxOwnedGames; expires: number } | null = null;
+    let libraryPending: Promise<XboxOwnedGames> | null = null;
+    let cacheGeneration = 0;
     let profileRetryAt = 0;
     let profileFailures = 0;
     let profileFailureDetail: string | null = null;
-    let identityCache: { msaToken: string; expires: number; xstsToken: string; uhs: string; xuid: string; gamertag: string | null } | null = null;
+    let identityCache: { msaToken: string; userToken: string; expires: number; xstsToken: string; uhs: string; xuid: string; gamertag: string | null } | null = null;
     const identity = async (msaToken: string, force: boolean): Promise<NonNullable<typeof identityCache>> => {
         if (!force && identityCache?.msaToken === msaToken && dependencies.now() < identityCache.expires) return identityCache;
         identityCache = null;
@@ -250,7 +202,7 @@ export function createXodusAccountReader(overrides: Partial<XodusAccountDependen
         const xuid = rawXuid && /^[0-9]+$/.test(rawXuid) ? rawXuid : null;
         if (!xstsToken || !uhs || !xuid) throw new Error("Xbox account lookup failed.");
         const expiry = Date.parse(typeof xsts?.NotAfter === "string" ? xsts.NotAfter : "");
-        identityCache = { msaToken, xstsToken, uhs, xuid, gamertag: text(claim?.gtg) ?? text(claim?.mgt),
+        identityCache = { msaToken, userToken, xstsToken, uhs, xuid, gamertag: text(claim?.gtg) ?? text(claim?.mgt),
             expires: Math.min(dependencies.now() + PROFILE_CACHE_MS, Number.isFinite(expiry) ? expiry : Infinity) };
         return identityCache;
     };
@@ -289,13 +241,16 @@ export function createXodusAccountReader(overrides: Partial<XodusAccountDependen
             if (cachedProfile) {
                 snapshot.profile.gamertag = cachedProfile.gamertag ?? snapshot.profile.gamertag;
                 snapshot.profile.avatarUrl = cachedProfile.avatarUrl;
+                snapshot.profile.gamerscore = cachedProfile.gamerscore;
+                snapshot.profile.accountTier = cachedProfile.accountTier;
+                snapshot.profile.tenure = cachedProfile.tenure;
             }
             const now = dependencies.now();
             if (!force && now < profileRetryAt) {
                 snapshot.detail = profileFailureDetail;
             } else if (force || !cachedProfile || now >= cachedProfile.expires) try {
                 const data = record(await requestJson(dependencies.fetch, PROFILE, {
-                    userIds: [xuid], settings: ["Gamertag", "GameDisplayPicRaw"],
+                    userIds: [xuid], settings: ["Gamertag", "GameDisplayPicRaw", "Gamerscore", "AccountTier", "TenureLevel"],
                 }, `XBL3.0 x=${uhs};${xstsToken}`));
                 const users = data?.profileUsers;
                 const user = Array.isArray(users) ? users.map(record).find(value => value?.id === xuid) : null;
@@ -303,8 +258,17 @@ export function createXodusAccountReader(overrides: Partial<XodusAccountDependen
                 for (const setting of user.settings.map(record)) {
                     if (setting?.id === "Gamertag") snapshot.profile.gamertag = text(setting.value) ?? snapshot.profile.gamertag;
                     if (setting?.id === "GameDisplayPicRaw") snapshot.profile.avatarUrl = avatar(setting.value);
+                    if (setting?.id === "AccountTier") snapshot.profile.accountTier = text(setting.value) ?? undefined;
+                    if (setting?.id === "Gamerscore" || setting?.id === "TenureLevel") {
+                        const number = typeof setting.value === "string" && /^\d+$/.test(setting.value) ? Number(setting.value) : NaN;
+                        if (Number.isSafeInteger(number)) {
+                            if (setting.id === "Gamerscore") snapshot.profile.gamerscore = number;
+                            else snapshot.profile.tenure = number;
+                        }
+                    }
                 }
                 cachedProfile = { xuid, gamertag: snapshot.profile.gamertag, avatarUrl: snapshot.profile.avatarUrl,
+                    gamerscore: snapshot.profile.gamerscore, accountTier: snapshot.profile.accountTier, tenure: snapshot.profile.tenure,
                     expires: dependencies.now() + PROFILE_CACHE_MS };
                 profileRetryAt = 0;
                 profileFailures = 0;
@@ -334,10 +298,54 @@ export function createXodusAccountReader(overrides: Partial<XodusAccountDependen
         snapshot.updatedAt = dependencies.now();
         return snapshot;
     };
+    const ownedGames = async (force = false): Promise<XboxOwnedGames> => {
+        const generation = cacheGeneration;
+        const snapshot = await read(false);
+        const current = identityCache;
+        if (snapshot.session !== "signed_in" || !current) {
+            libraryCache = null;
+            return { games: [], status: "unavailable", detail: "Sign in through Xodus to view your owned games.", updatedAt: dependencies.now() };
+        }
+        if (!force && libraryCache?.xuid === current.xuid && dependencies.now() < libraryCache.expires) return libraryCache.result;
+        let retry = PROFILE_CACHE_MS;
+        let result: XboxOwnedGames;
+        try {
+            const xsts = record(await requestJson(dependencies.fetch, XSTS_AUTH, {
+                RelyingParty: "http://licensing.xboxlive.com", TokenType: "JWT",
+                Properties: { SandboxId: "RETAIL", UserTokens: [current.userToken] },
+            }));
+            const token = text(xsts?.Token, MAX_PAYLOAD_BYTES);
+            const claims = record(xsts?.DisplayClaims)?.xui;
+            // The licensing token exposes the user hash, but may omit the XUID.
+            const claim = Array.isArray(claims) ? claims.map(record).find(c => c?.uhs === current.uhs
+                && (c?.xid === undefined || c.xid === current.xuid)) : null;
+            const uhs = text(claim?.uhs);
+            if (!token || !uhs) throw new Error("Xbox inventory authorization unavailable.");
+            const games = await fetchOwnedGames(dependencies.fetch, `XBL3.0 x=${uhs};${token}`);
+            // A successful empty legacy inventory is not an account-wide ownership
+            // answer. Modern Store purchases can be invisible to this token/endpoint.
+            result = { games, status: games.length ? "available" : "unavailable", detail: games.length
+                ? "Confirmed purchases returned by Xbox. This is a partial library; other Store purchases and shared games may not appear."
+                : "Your owned-game library could not be retrieved. This does not mean you own no games.", updatedAt: dependencies.now() };
+        } catch (error) {
+            const status = error instanceof XboxHttpError ? error.status : null;
+            if (error instanceof XboxHttpError) retry = Math.max(retry, retryDelay(error.retryAfter, dependencies.now()));
+            result = { games: [], status: "unavailable", updatedAt: dependencies.now(), detail: status === 429
+                ? "Xbox has rate-limited library updates. Try again later."
+                : `Xbox could not return your owned games${status ? ` (HTTP ${status})` : ""}. This does not mean your library is empty.` };
+        }
+        if (generation === cacheGeneration && identityCache?.xuid === current.xuid) libraryCache = { xuid: current.xuid, result, expires: dependencies.now() + retry };
+        return result;
+    };
     return Object.assign((force = false) => {
         if (!inFlight) inFlight = read(force).finally(() => { inFlight = null; });
         return inFlight;
-    }, { clearCache: () => {
+    }, { ownedGames: (force = false) => {
+        if (!libraryPending) libraryPending = ownedGames(force).finally(() => { libraryPending = null; });
+        return libraryPending;
+    }, clearCache: () => {
+        cacheGeneration++;
+        libraryCache = null;
         cachedProfile = null;
         identityCache = null;
         profileRetryAt = 0;

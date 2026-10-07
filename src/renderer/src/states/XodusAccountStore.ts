@@ -1,11 +1,16 @@
 import { create } from "zustand";
-import { XODUS_ACCOUNT_LOGIN, XODUS_ACCOUNT_LOGOUT, XODUS_ACCOUNT_REFRESH, type XodusAccountSnapshot, type XodusLoginResult } from "@shared/linux/XodusAccountTypes";
+import { XODUS_ACCOUNT_LOGIN, XODUS_ACCOUNT_LOGOUT, XODUS_ACCOUNT_REFRESH, XODUS_RESTART, XODUS_ACCOUNT_LIBRARY, type XboxOwnedGames, type XodusAccountSnapshot, type XodusLoginResult } from "@shared/linux/XodusAccountTypes";
 
 interface XodusAccountState {
     snapshot: XodusAccountSnapshot | null;
     loading: boolean;
     signingIn: boolean;
     signingOut: boolean;
+    restarting: boolean;
+    restart(): Promise<void>;
+    library: XboxOwnedGames | null;
+    libraryLoading: boolean;
+    loadLibrary(force?: boolean): Promise<void>;
     logout(): Promise<void>;
     error: string | null;
     refresh(force?: boolean): Promise<void>;
@@ -15,6 +20,9 @@ interface XodusAccountState {
 let pending: Promise<void> | undefined;
 let pendingLogout: Promise<void> | undefined;
 let pendingLogin: Promise<void> | undefined;
+let pendingRestart: Promise<void> | undefined;
+let pendingLibrary: Promise<void> | undefined;
+let accountRevision = 0;
 let backendUnavailable = false;
 
 export const useXodusAccountStore = create<XodusAccountState>((set, get) => ({
@@ -22,23 +30,31 @@ export const useXodusAccountStore = create<XodusAccountState>((set, get) => ({
     loading: false,
     signingIn: false,
     signingOut: false,
+    restarting: false,
+    library: null,
+    libraryLoading: false,
     error: null,
     refresh: (force = false) => {
         if (window.process.platform !== "linux") return Promise.resolve();
-        if (get().signingIn || get().signingOut) return Promise.resolve();
+        if (get().signingIn || get().signingOut || get().restarting) return Promise.resolve();
         if (pending) return pending;
         set({ loading: true, error: null });
         pending = Promise.resolve().then(async () => {
             try {
                 const { ipcRenderer } = window.require("electron") as typeof import("electron");
                 const snapshot: XodusAccountSnapshot = await ipcRenderer.invoke(XODUS_ACCOUNT_REFRESH, force);
+                if (snapshot.profile?.xuid !== get().snapshot?.profile?.xuid || snapshot.session !== "signed_in") {
+                    accountRevision++;
+                    set({ library: null });
+                }
                 backendUnavailable = false;
                 set({ snapshot, error: null });
             } catch (error) {
                 // Never copy an IPC exception into the UI or log: it may contain account data.
+                accountRevision++;
                 backendUnavailable = error instanceof Error
                     && error.message.includes(`No handler registered for '${XODUS_ACCOUNT_REFRESH}'`);
-                set({ snapshot: null, error: backendUnavailable
+                set({ snapshot: null, library: null, error: backendUnavailable
                     ? "Restart the launcher to load the account integration. If running in development, restart npm run dev."
                     : "Could not refresh account status. Try again." });
             } finally {
@@ -48,9 +64,45 @@ export const useXodusAccountStore = create<XodusAccountState>((set, get) => ({
         });
         return pending;
     },
+    loadLibrary: (force = false) => {
+        if (window.process.platform !== "linux" || get().snapshot?.session !== "signed_in" || get().signingIn || get().signingOut || get().restarting) return Promise.resolve();
+        if (pendingLibrary) return pendingLibrary;
+        const revision = accountRevision;
+        set({ libraryLoading: true });
+        pendingLibrary = Promise.resolve().then(async () => {
+            try {
+                const { ipcRenderer } = window.require("electron") as typeof import("electron");
+                const library: XboxOwnedGames = await ipcRenderer.invoke(XODUS_ACCOUNT_LIBRARY, force);
+                if (revision === accountRevision) set({ library });
+            } catch {
+                if (revision === accountRevision) set({ library: { games: [], status: "unavailable", updatedAt: Date.now(), detail: "Could not load your Xbox library. Try Refresh again." } });
+            } finally { pendingLibrary = undefined; set({ libraryLoading: false }); }
+        });
+        return pendingLibrary;
+    },
+    restart: () => {
+        if (window.process.platform !== "linux" || get().signingIn || get().signingOut) return Promise.resolve();
+        if (pendingRestart) return pendingRestart;
+        set({ restarting: true, error: null });
+        pendingRestart = Promise.resolve().then(async () => {
+            try {
+                await pending;
+                const { ipcRenderer } = window.require("electron") as typeof import("electron");
+                const result: XodusLoginResult = await ipcRenderer.invoke(XODUS_RESTART);
+                set({ restarting: false });
+                if (result.ok) await get().refresh(true);
+                else set({ error: result.message || "Could not restart Xodus." });
+            } catch {
+                set({ error: "Could not restart Xodus. Fully quit and reopen the launcher, then try again." });
+            } finally { pendingRestart = undefined; set({ restarting: false }); }
+        });
+        return pendingRestart;
+    },
     logout: () => {
-        if (window.process.platform !== "linux" || get().signingIn) return Promise.resolve();
+        if (window.process.platform !== "linux" || get().signingIn || get().restarting) return Promise.resolve();
         if (pendingLogout) return pendingLogout;
+        accountRevision++;
+        set({ library: null });
         set({ signingOut: true, error: null });
         pendingLogout = Promise.resolve().then(async () => {
             try {
@@ -71,9 +123,11 @@ export const useXodusAccountStore = create<XodusAccountState>((set, get) => ({
         return pendingLogout;
     },
     login: () => {
-        if (get().signingOut) return Promise.resolve();
+        if (get().signingOut || get().restarting) return Promise.resolve();
         if (window.process.platform !== "linux") return Promise.resolve();
         if (pendingLogin) return pendingLogin;
+        accountRevision++;
+        set({ library: null });
         set({ signingIn: true, error: null });
         pendingLogin = Promise.resolve().then(async () => {
             try {

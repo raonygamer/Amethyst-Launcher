@@ -3,14 +3,12 @@ import { createRequire } from "node:module";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import net from "node:net";
 import { describe, it } from "node:test";
 import { packageInstallCommand, selectPackageManager, shellQuote } from "../src/shared/linux/LinuxDependencies.ts";
 import type { ProcessResult } from "../src/shared/diagnostics/ProcessRunner.ts";
 
 (globalThis as unknown as { require: NodeRequire }).require = createRequire(import.meta.url);
 const { checked, buildSource, sourceRevision, verifySource, installDependencies, findExecutable } = await import("../src/shared/linux/LinuxBuild.ts");
-const { xodusEnvironment, xodusUnit, xodusAutostartScript, setupXodusService, assertXodusReady } = await import("../src/shared/linux/XodusService.ts");
 
 function result(stdout = "", code = 0): ProcessResult {
     return { command: "test", args: [], loggableArgs: [], code, stdout, stderr: "", output: stdout, durationMs: 0, timedOut: false };
@@ -149,69 +147,5 @@ describe("Linux source builds", () => {
             assert.ok(!calls.includes(path.join(folder, "bin/xodus-service")));
             await assert.rejects(verifySource("xodus", folder, async () => result("libwebkit.so => not found")), /missing runtime libraries/);
         } finally { await fs.rm(folder, { recursive: true, force: true }); }
-    });
-});
-
-describe("persistent xodus-service setup", () => {
-    it("uses the requested private runtime and home with the service executable", () => {
-        assert.deepEqual(xodusEnvironment("/tmp/amethyst data"), {
-            HOME: process.env.HOME || os.homedir(), XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR,
-        });
-        const unit = xodusUnit("/tmp/tools/bin/xodus-service", "/tmp/amethyst data", "unix:path=/run/user/1000/bus");
-        assert.match(unit, /ExecStart="\/tmp\/tools\/bin\/xodus-service"/);
-        assert.doesNotMatch(unit, /Environment="HOME=/);
-        assert.doesNotMatch(unit, /Environment="XDG_RUNTIME_DIR=/);
-        assert.match(unit, /Restart=always/);
-        assert.match(unit, /WantedBy=default.target/);
-        assert.match(unit, /UMask=0077/);
-    });
-
-    it("escapes systemd specifiers and shell-sensitive autostart paths", () => {
-        assert.match(xodusUnit("/tmp/100%/$tools/xodus-service", "/tmp/a\"b"), /100%%\/\$\$tools/);
-        const script = xodusAutostartScript("/tmp/a'b/bin/xodus-service", "/tmp/a b");
-        assert.ok(script.includes(`'/tmp/a'"'"'b/bin/xodus-service'`));
-        assert.match(script, /flock -n 9/);
-        assert.match(script, /while :; do/);
-        assert.match(script, /sleep 10/);
-    });
-
-    it("enables the user service and confirms its socket without changing the manager's HOME", { skip: process.platform !== "linux" }, async () => {
-        const folder = await fs.mkdtemp(path.join(os.tmpdir(), "xodus-service-test-"));
-        const originalRuntime = process.env.XDG_RUNTIME_DIR;
-        process.env.XDG_RUNTIME_DIR = folder;
-        const originalConfig = process.env.XDG_CONFIG_HOME;
-        process.env.XDG_CONFIG_HOME = path.join(folder, "config");
-        const server = net.createServer(socket => socket.destroy());
-        const calls: string[][] = [];
-        try {
-            const executable = path.join(folder, "xodus-service");
-            const data = path.join(folder, "data");
-            await fs.writeFile(executable, "test", { mode: 0o700 });
-            const setup = await setupXodusService(executable, data, () => {}, async (_command, args, options) => {
-                calls.push(args);
-                assert.notEqual(options?.env?.HOME, path.join(data, "home"));
-                if (args.includes("show-environment")) return result("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus\n");
-                if (args.includes("restart")) await new Promise<void>((resolve, reject) => {
-                    server.once("error", reject);
-                    server.listen(path.join(folder, "xodus.sock"), resolve);
-                });
-                return result();
-            });
-            assert.equal(setup.manager, "systemd");
-            await assertXodusReady(data);
-            await assertXodusReady(path.join(folder, "different-data")); // All tools use the same session socket.
-            assert.ok(calls.some(args => args.includes("enable")));
-            assert.ok(calls.some(args => args.includes("is-active")));
-            assert.equal((await fs.stat(setup.runtime)).mode & 0o777, 0o700);
-            assert.equal(setup.home, process.env.HOME || os.homedir());
-            assert.match(await fs.readFile(setup.configuration, "utf8"), /ExecStart=.*xodus-service/);
-        } finally {
-            if (originalRuntime === undefined) delete process.env.XDG_RUNTIME_DIR;
-            else process.env.XDG_RUNTIME_DIR = originalRuntime;
-            if (originalConfig === undefined) delete process.env.XDG_CONFIG_HOME;
-            else process.env.XDG_CONFIG_HOME = originalConfig;
-            if (server.listening) await new Promise<void>(resolve => server.close(() => resolve()));
-            await fs.rm(folder, { recursive: true, force: true });
-        }
     });
 });

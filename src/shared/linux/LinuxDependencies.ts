@@ -37,6 +37,8 @@ export const LINUX_DEPENDENCIES: Dependency[] = [
     // secret-tool has no successful --version/--help command. Only probe its presence;
     // credential lookup belongs to the account reader, never the build/logging runner.
     { ...dependency(["xodus"], binary("secret-tool"), "libsecret-tools", "libsecret", "libsecret", "libsecret-tools", "libsecret"), executableOnly: true },
+    dependency(["xodus"], { command: "python3", args: ["-c", "import gi; gi.require_version('Secret', '1'); from gi.repository import Secret"] },
+        "python3-gi gir1.2-secret-1", "python3-gobject libsecret", "python-gobject libsecret", "python3-gobject typelib-1_0-Secret-1", "py3-gobject3 libsecret"),
     dependency(["xodus"], library("gtk+-3.0"), "libgtk-3-dev", "gtk3-devel", "gtk3", "gtk3-devel", "gtk+3.0-dev"),
     dependency(["xodus"], library("webkit2gtk-4.1"), "libwebkit2gtk-4.1-dev", "webkit2gtk4.1-devel", "webkit2gtk-4.1", "webkit2gtk3-devel", "webkit2gtk-4.1-dev"),
     dependency(["xodus"], library("openssl"), "libssl-dev", "openssl-devel", "openssl", "libopenssl-devel", "openssl-dev"),

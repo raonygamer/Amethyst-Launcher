@@ -10,7 +10,9 @@ import * as path from "path";
 import { fileURLToPath } from "url";
 
 import { describeError } from "../shared/diagnostics/Log";
-import { XODUS_ACCOUNT_LOGIN, XODUS_ACCOUNT_LOGOUT, XODUS_ACCOUNT_REFRESH } from "../shared/linux/XodusAccountTypes";
+import { XODUS_ACCOUNT_LOGIN, XODUS_ACCOUNT_LOGOUT, XODUS_ACCOUNT_REFRESH, XODUS_ENSURE_RUNNING, XODUS_RESTART, XODUS_ACCOUNT_LIBRARY } from "../shared/linux/XodusAccountTypes";
+import { createXodusDaemon } from "./linux/XodusDaemon";
+import { unlockXodusKeyring, KeyringUnlockError } from "./linux/XodusKeyring";
 import { getXodusAccountSnapshot } from "./linux/XodusAccount";
 import { loginToXodus, logoutOfXodus } from "./linux/XodusLogin";
 import { createProfileShortcutSync } from "./linux/ProfileShortcuts";
@@ -44,6 +46,21 @@ let quitting = false;
 let protocolReady = false;
 let backgroundLaunchRequested = false;
 const pendingProtocolUrls: string[] = [];
+const xodusDaemon = createXodusDaemon({ home: app.getPath("home"), env: process.env,
+    log: message => mainLog("INFO", "Xodus", message) });
+let xodusStartup: Promise<void> | undefined;
+let xodusStartError: string | null = null;
+function ensureXodusRunning(): Promise<void> {
+    if (!xodusStartup) {
+        const operation = xodusDaemon.ensureRunning().then(() => { xodusStartError = null; }).catch(error => {
+            xodusStartError = error instanceof Error ? error.message : "Could not start Xodus.";
+            mainLog("WARN", "Xodus", xodusStartError);
+            throw error;
+        }).finally(() => { if (xodusStartup === operation) xodusStartup = undefined; });
+        xodusStartup = operation;
+    }
+    return xodusStartup;
+}
 
 function showMainWindow(): void {
     if (!app.isReady()) { void app.whenReady().then(showMainWindow); return; }
@@ -399,6 +416,7 @@ else {
         serveIcons();
         mainWindow = createWindow();
         createTray();
+        if (process.platform === "linux") void ensureXodusRunning().catch(() => {});
 
         mainWindow.once("ready-to-show", () => {
             // Handle the case where the app was cold-started via a protocol URL.
@@ -432,6 +450,30 @@ else {
 registerDownloadIpc();
 
 if (process.platform === "linux") {
+    ipcMain.handle(XODUS_ACCOUNT_LIBRARY, async (event, force?: unknown) => {
+        if (event.sender !== mainWindow?.webContents) throw new Error("Only the launcher can read the Xbox library.");
+        return getXodusAccountSnapshot.ownedGames(force === true);
+    });
+    ipcMain.handle(XODUS_RESTART, async event => {
+        if (event.sender !== mainWindow?.webContents) throw new Error("Only the launcher can restart Xodus.");
+        const operation = xodusDaemon.restart();
+        xodusStartup = operation;
+        try {
+            await operation;
+            xodusStartError = null;
+            getXodusAccountSnapshot.clearCache();
+            return { ok: true, message: null };
+        } catch (error) {
+            xodusStartError = error instanceof Error ? error.message : "Could not restart Xodus.";
+            mainLog("WARN", "Xodus", xodusStartError);
+            return { ok: false, message: xodusStartError };
+        } finally { if (xodusStartup === operation) xodusStartup = undefined; }
+    });
+    ipcMain.handle(XODUS_ENSURE_RUNNING, async event => {
+        if (event.sender !== mainWindow?.webContents) throw new Error("Only the launcher can start Xodus.");
+        try { await ensureXodusRunning(); return { ok: true, message: null }; }
+        catch { return { ok: false, message: xodusStartError }; }
+    });
     const dataHome = process.env.XDG_DATA_HOME && path.isAbsolute(process.env.XDG_DATA_HOME)
         ? process.env.XDG_DATA_HOME : path.join(app.getPath("home"), ".local/share");
     const executable = app.isPackaged && process.env.APPIMAGE && path.isAbsolute(process.env.APPIMAGE)
@@ -447,6 +489,12 @@ if (process.platform === "linux") {
     ipcMain.handle(XODUS_ACCOUNT_LOGIN, async () => {
         mainLog("INFO", "Xodus", "Opening account login");
         try {
+            await ensureXodusRunning();
+            await unlockXodusKeyring();
+        } catch (error) {
+            return { ok: false, message: xodusStartError || (error instanceof KeyringUnlockError ? error.message : "Could not prepare Xodus login. Try again.") };
+        }
+        try {
             const result = await loginToXodus();
             if (result.ok) getXodusAccountSnapshot.clearCache();
             mainLog("INFO", "Xodus", result.ok ? "Login window closed; refreshing account status" : "Login did not complete");
@@ -457,6 +505,7 @@ if (process.platform === "linux") {
     });
     ipcMain.handle(XODUS_ACCOUNT_LOGOUT, async () => {
         try {
+            await unlockXodusKeyring();
             const result = await logoutOfXodus();
             if (result.ok) getXodusAccountSnapshot.clearCache();
             mainLog("INFO", "Xodus", result.ok ? "Logged out; refreshing account status" : "Logout did not complete");
@@ -465,7 +514,10 @@ if (process.platform === "linux") {
     });
     ipcMain.handle(XODUS_ACCOUNT_REFRESH, async (_event, force?: unknown) => {
         try {
-            return await getXodusAccountSnapshot(force === true);
+            if (force === true) await ensureXodusRunning().catch(() => {});
+            else if (xodusStartup) await xodusStartup.catch(() => {});
+            const snapshot = await getXodusAccountSnapshot(force === true);
+            return snapshot.service === "disconnected" && xodusStartError ? { ...snapshot, detail: xodusStartError } : snapshot;
         } catch {
             // Do not send or log raw authentication/keyring exceptions.
             throw new Error("Could not refresh account status.");
